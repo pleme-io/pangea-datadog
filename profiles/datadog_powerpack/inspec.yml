@@ -1,0 +1,8 @@
+name: datadog_powerpack
+title: Manages a datadog_powerpack resource
+version: 0.1.0
+supports:
+  - platform: datadog
+depends:
+  - name: inspec-datadog
+    url: https://github.com/pleme-io/inspec-datadog

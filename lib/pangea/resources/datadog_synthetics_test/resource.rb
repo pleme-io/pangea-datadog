@@ -12,10 +12,10 @@ module Pangea::Resources
 
     define_resource :datadog_synthetics_test,
       attributes_class: Datadog::Types::SyntheticsTestAttributes,
-      outputs: { id: :id, monitor_id: :monitor_id },
-      map: [:name, :type, :status, :locations],
-      map_present: [:config, :message, :options, :subtype, :tags],
-      map_bool: []
+      outputs: { id: :id },
+      map: [:locations, :name, :status, :type],
+      map_present: [:api_step, :assertion, :browser_step, :browser_variable, :config_initial_application_arguments, :config_variable, :device_ids, :message, :mobile_options_list, :mobile_step, :options_list, :request_basicauth, :request_client_certificate, :request_definition, :request_file, :request_headers, :request_metadata, :request_proxy, :request_query, :set_cookie, :subtype, :tags, :variables_from_script],
+      map_bool: [:force_delete_dependencies]
   end
   module Datadog
     include DatadogSyntheticsTest

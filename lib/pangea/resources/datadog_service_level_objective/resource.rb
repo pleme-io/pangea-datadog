@@ -12,10 +12,10 @@ module Pangea::Resources
 
     define_resource :datadog_service_level_objective,
       attributes_class: Datadog::Types::ServiceLevelObjectiveAttributes,
-      outputs: { id: :id, name: :name },
-      map: [:name, :type, :thresholds],
-      map_present: [:description, :groups, :monitor_ids, :query, :tags, :target_threshold, :timeframe, :warning_threshold],
-      map_bool: []
+      outputs: { id: :id },
+      map: [:name, :thresholds, :type],
+      map_present: [:description, :groups, :monitor_ids, :query, :sli_specification, :tags, :target_threshold, :timeframe, :warning_threshold],
+      map_bool: [:force_delete, :validate]
   end
   module Datadog
     include DatadogServiceLevelObjective

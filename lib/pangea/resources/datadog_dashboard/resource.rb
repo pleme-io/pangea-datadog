@@ -12,9 +12,9 @@ module Pangea::Resources
 
     define_resource :datadog_dashboard,
       attributes_class: Datadog::Types::DashboardAttributes,
-      outputs: { id: :id, url: :url },
-      map: [:title, :layout_type],
-      map_present: [:description, :notify_list, :reflow_type, :tags, :template_variables, :widgets],
+      outputs: { id: :id },
+      map: [:layout_type, :title],
+      map_present: [:dashboard_lists, :description, :notify_list, :reflow_type, :restricted_roles, :tab, :tags, :template_variable, :template_variable_preset, :url, :widget],
       map_bool: [:is_read_only]
   end
   module Datadog

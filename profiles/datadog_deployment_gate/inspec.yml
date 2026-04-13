@@ -1,0 +1,8 @@
+name: datadog_deployment_gate
+title: Manages a datadog_deployment_gate resource
+version: 0.1.0
+supports:
+  - platform: datadog
+depends:
+  - name: inspec-datadog
+    url: https://github.com/pleme-io/inspec-datadog

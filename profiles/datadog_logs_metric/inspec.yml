@@ -1,0 +1,8 @@
+name: datadog_logs_metric
+title: Manages a datadog_logs_metric resource
+version: 0.1.0
+supports:
+  - platform: datadog
+depends:
+  - name: inspec-datadog
+    url: https://github.com/pleme-io/inspec-datadog

@@ -12,10 +12,9 @@ module Pangea::Resources
 
     define_resource :datadog_dashboard_json,
       attributes_class: Datadog::Types::DashboardJsonAttributes,
-      outputs: { id: :id, url: :url },
+      outputs: { id: :id },
       map: [:dashboard],
-      map_present: [],
-      map_bool: []
+      map_present: [:dashboard_lists, :url]
   end
   module Datadog
     include DatadogDashboardJson

@@ -1,0 +1,8 @@
+name: datadog_authn_mapping
+title: Manages a datadog_authn_mapping resource
+version: 0.1.0
+supports:
+  - platform: datadog
+depends:
+  - name: inspec-datadog
+    url: https://github.com/pleme-io/inspec-datadog

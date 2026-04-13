@@ -1,0 +1,8 @@
+name: datadog_team_permission_setting
+title: Manages a datadog_team_permission_setting resource
+version: 0.1.0
+supports:
+  - platform: datadog
+depends:
+  - name: inspec-datadog
+    url: https://github.com/pleme-io/inspec-datadog

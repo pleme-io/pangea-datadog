@@ -12,9 +12,9 @@ module Pangea::Resources
 
     define_resource :datadog_apm_retention_filter,
       attributes_class: Datadog::Types::ApmRetentionFilterAttributes,
-      outputs: { id: :id, name: :name },
-      map: [:name, :filter_type, :rate],
-      map_present: [:filter],
+      outputs: { id: :id },
+      map: [:filter_type, :name, :rate],
+      map_present: [:filter, :trace_rate],
       map_bool: [:enabled]
   end
   module Datadog

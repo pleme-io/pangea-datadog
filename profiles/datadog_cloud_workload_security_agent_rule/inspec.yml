@@ -1,0 +1,8 @@
+name: datadog_cloud_workload_security_agent_rule
+title: Manages a datadog_cloud_workload_security_agent_rule resource
+version: 0.1.0
+supports:
+  - platform: datadog
+depends:
+  - name: inspec-datadog
+    url: https://github.com/pleme-io/inspec-datadog

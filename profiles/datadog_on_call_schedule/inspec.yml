@@ -1,0 +1,8 @@
+name: datadog_on_call_schedule
+title: Manages a datadog_on_call_schedule resource
+version: 0.1.0
+supports:
+  - platform: datadog
+depends:
+  - name: inspec-datadog
+    url: https://github.com/pleme-io/inspec-datadog

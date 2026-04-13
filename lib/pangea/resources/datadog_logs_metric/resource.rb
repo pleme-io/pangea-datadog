@@ -12,10 +12,9 @@ module Pangea::Resources
 
     define_resource :datadog_logs_metric,
       attributes_class: Datadog::Types::LogsMetricAttributes,
-      outputs: { id: :id, name: :name },
-      map: [:name, :compute],
-      map_present: [:filter, :group_by],
-      map_bool: []
+      outputs: { id: :id },
+      map: [:compute, :filter, :name],
+      map_present: [:group_by]
   end
   module Datadog
     include DatadogLogsMetric

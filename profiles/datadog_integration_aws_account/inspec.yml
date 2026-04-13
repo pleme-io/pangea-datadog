@@ -1,0 +1,8 @@
+name: datadog_integration_aws_account
+title: Manages a datadog_integration_aws_account resource
+version: 0.1.0
+supports:
+  - platform: datadog
+depends:
+  - name: inspec-datadog
+    url: https://github.com/pleme-io/inspec-datadog

@@ -1,0 +1,8 @@
+name: datadog_datastore_item
+title: Manages a datadog_datastore_item resource
+version: 0.1.0
+supports:
+  - platform: datadog
+depends:
+  - name: inspec-datadog
+    url: https://github.com/pleme-io/inspec-datadog

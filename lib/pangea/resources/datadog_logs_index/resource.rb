@@ -12,9 +12,9 @@ module Pangea::Resources
 
     define_resource :datadog_logs_index,
       attributes_class: Datadog::Types::LogsIndexAttributes,
-      outputs: { id: :id, name: :name },
-      map: [:name, :filter],
-      map_present: [:daily_limit, :daily_limit_reset, :daily_limit_warning_threshold_percentage, :exclusion_filters, :retention_days],
+      outputs: { id: :id },
+      map: [:filter, :name],
+      map_present: [:daily_limit, :daily_limit_reset, :daily_limit_warning_threshold_percentage, :exclusion_filter, :flex_retention_days, :retention_days, :tags],
       map_bool: [:disable_daily_limit]
   end
   module Datadog

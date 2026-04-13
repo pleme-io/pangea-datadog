@@ -1,0 +1,8 @@
+name: datadog_integration_ms_teams_tenant_based_handle
+title: Manages a datadog_integration_ms_teams_tenant_based_handle resource
+version: 0.1.0
+supports:
+  - platform: datadog
+depends:
+  - name: inspec-datadog
+    url: https://github.com/pleme-io/inspec-datadog

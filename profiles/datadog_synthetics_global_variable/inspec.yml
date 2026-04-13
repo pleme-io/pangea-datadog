@@ -1,0 +1,8 @@
+name: datadog_synthetics_global_variable
+title: Manages a datadog_synthetics_global_variable resource
+version: 0.1.0
+supports:
+  - platform: datadog
+depends:
+  - name: inspec-datadog
+    url: https://github.com/pleme-io/inspec-datadog

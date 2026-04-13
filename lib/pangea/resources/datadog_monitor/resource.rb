@@ -12,10 +12,10 @@ module Pangea::Resources
 
     define_resource :datadog_monitor,
       attributes_class: Datadog::Types::MonitorAttributes,
-      outputs: { id: :id, name: :name },
-      map: [:name, :type, :query, :message],
-      map_present: [:escalation_message, :evaluation_delay, :new_group_delay, :no_data_timeframe, :priority, :renotify_interval, :restricted_roles, :tags, :timeout_h],
-      map_bool: [:enable_logs_sample, :groupby_simple_monitor, :include_tags, :notify_no_data]
+      outputs: { id: :id },
+      map: [:message, :name, :query, :type],
+      map_present: [:assets, :draft_status, :escalation_message, :evaluation_delay, :group_retention_duration, :monitor_threshold_windows, :monitor_thresholds, :new_group_delay, :new_host_delay, :no_data_timeframe, :notification_preset_name, :notify_by, :on_missing_data, :priority, :renotify_interval, :renotify_occurrences, :renotify_statuses, :restricted_roles, :scheduling_options, :tags, :timeout_h, :variables],
+      map_bool: [:enable_logs_sample, :enable_samples, :force_delete, :groupby_simple_monitor, :include_tags, :notify_audit, :notify_no_data, :require_full_window, :validate]
   end
   module Datadog
     include DatadogMonitor
