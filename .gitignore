@@ -1,1 +1,5 @@
 vendor/
+
+# Test runtime artifacts (regenerated on every `bundle exec rspec`).
+.rspec_status
+coverage/
