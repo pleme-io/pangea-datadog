@@ -1,0 +1,22 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (informational; lib/pangea-datadog/version.rb is source of truth)'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  gem:
+    name: Build & push to rubygems.org
+    uses: pleme-io/substrate/.github/workflows/gem-release.yml@main
+    with:
+      gem-name: pangea-datadog
+    secrets:
+      RUBYGEMS_API_KEY: ${{ secrets.RUBYGEMS_API_KEY }}
