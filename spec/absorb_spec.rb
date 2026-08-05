@@ -1384,6 +1384,75 @@ RSpec.describe Absorb do
     end
   end
 
+  # A capture that was never reconciled still HOLDS its powerpacks; emit just
+  # cannot declare them. verify then checks only what emit declared, everything
+  # matches, and the gate goes green while live objects are unmanaged -- the
+  # same "nothing to check reads as everything is fine" failure already fixed
+  # for an empty capture, in partial form.
+  describe 'coverage gaps' do
+    around { |example| Dir.mktmpdir { |dir| @dir = dir; example.run } }
+
+    def capture_with_powerpack(reconciled:)
+      cap = Absorb::Capture.new(File.join(@dir, 'estate'))
+      cap.prepare
+      cap.write(:monitors, '123', monitor_payload)
+      cap.write(:powerpacks, 'p1', { 'id' => 'p1', 'attributes' => { 'name' => 'Net' } })
+      cap.write_normalized(:powerpacks, 'p1', { 'name' => 'Net' }) if reconciled
+      cap
+    end
+
+    it 'fails when a captured powerpack was never reconciled' do
+      cap = capture_with_powerpack(reconciled: false)
+      out = File.join(@dir, 'g')
+      Absorb::Emit.new(capture: cap, out_dir: out, rules: rules).run
+      result = Absorb::Verify.new(capture: cap, out_dir: out).run
+
+      expect(result).not_to be_ok
+      expect(result.uncovered.size).to eq(1)
+      expect(result.uncovered.first[:reason]).to include('reconcile')
+    end
+
+    it 'passes once that powerpack has a body' do
+      cap = capture_with_powerpack(reconciled: true)
+      out = File.join(@dir, 'g')
+      Absorb::Emit.new(capture: cap, out_dir: out, rules: rules).run
+      result = Absorb::Verify.new(capture: cap, out_dir: out).run
+
+      expect(result).to be_ok
+      expect(result.uncovered).to be_empty
+    end
+
+    # The line this must not cross. A Datadog-managed role, an APM filter the
+    # provider rejects, a retire-tier dashboard -- all correct exclusions. A
+    # gate that cried wolf about decisions it was told to make would be turned
+    # off, and the real gaps would go with it.
+    it 'stays silent about deliberate exclusions' do
+      cap = Absorb::Capture.new(File.join(@dir, 'estate'))
+      cap.prepare
+      cap.write(:monitors, '123', monitor_payload)
+      cap.write(:roles, 'r1', { 'id' => 'r1', 'attributes' => { 'name' => 'Admin', 'managed' => true } })
+      cap.write(:apm_retention_filters, 'f1', {
+                  'id' => 'f1', 'attributes' => { 'name' => 'Default', 'enabled' => true,
+                                                  'filter_type' => 'spans-errors-sampling-processor',
+                                                  'rate' => 1 }
+                })
+      out = File.join(@dir, 'g')
+      Absorb::Emit.new(capture: cap, out_dir: out, rules: rules).run
+
+      expect(Absorb::Verify.new(capture: cap, out_dir: out).run).to be_ok
+    end
+
+    it 'carries the gap into the receipt, not just the printed summary' do
+      cap = capture_with_powerpack(reconciled: false)
+      out = File.join(@dir, 'g')
+      Absorb::Emit.new(capture: cap, out_dir: out, rules: rules).run
+      findings = Absorb::Verify.new(capture: cap, out_dir: out).run.findings
+
+      expect(findings['uncovered']).to eq(1)
+      expect(findings['uncoveredKinds'].first['kind']).to eq('powerpacks')
+    end
+  end
+
   # classify is the verb someone runs FIRST to see what adoption touches, and it
   # reported only monitors and dashboards while the estate held nine captured
   # kinds. That understated the scope and hid the deliberate exclusions -- the

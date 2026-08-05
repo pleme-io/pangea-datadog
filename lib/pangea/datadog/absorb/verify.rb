@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'set'
 require_relative 'normalize'
 require_relative 'classify'
 
@@ -32,9 +33,12 @@ module Pangea
         #                no IaC can own it. Adoption leaves it untouched. Does
         #                not fail, but is always reported -- "state match" must
         #                never be read as "fully managed".
-        Result = Struct.new(:checked, :matched, :diffs, :unmapped, :unmanageable, keyword_init: true) do
+        Result = Struct.new(:checked, :matched, :diffs, :unmapped, :unmanageable, :uncovered,
+                            keyword_init: true) do
+          def uncovered = self[:uncovered] || []
+
           def ok?
-            diffs.empty? && unmapped.empty?
+            diffs.empty? && unmapped.empty? && uncovered.empty?
           end
 
           # The machine-readable half of the same answer to_s renders. Kept
@@ -46,6 +50,10 @@ module Pangea
               'diffs' => diffs.size,
               'unmapped' => unmapped.size,
               'unmanageable' => unmanageable.size,
+              'uncovered' => uncovered.size,
+              'uncoveredKinds' => uncovered.group_by { |u| u[:kind] }
+                                           .map { |kind, es| { 'kind' => kind.to_s, 'count' => es.size,
+                                                               'reason' => es.first[:reason] } },
               'diffAddresses' => diffs.map { |d| "#{d[:address]}##{d[:attribute]}" }.sort.first(50),
               'unmappedAddresses' => unmapped.map { |u| u[:address] }.sort.first(50),
               'unmanageableByKeys' => unmanageable.group_by { |u| u[:keys] }
@@ -54,8 +62,14 @@ module Pangea
           end
 
           def to_s
+            uncovered.group_by { |u| u[:kind] }.each do |kind, entries|
+              tail = "  UNCOVERED #{entries.size} #{kind} in the capture were never emitted " \
+                     "(#{entries.first[:reason]})"
+              (@uncovered_lines ||= []) << tail
+            end
             lines = ["checked #{checked}, matched #{matched}, diffs #{diffs.size}, " \
                      "unmapped #{unmapped.size}, unmanageable #{unmanageable.size}"]
+            (@uncovered_lines || []).each { |line| lines << line }
             diffs.each { |d| lines << "  DIFF #{d[:address]} #{d[:attribute]}" }
             unmapped.each { |u| lines << "  UNMAPPED #{u[:address]} #{u[:keys].inspect}" }
             unmanageable.group_by { |g| g[:keys] }.each do |keys, entries|
@@ -178,7 +192,8 @@ module Pangea
           end
 
           Result.new(checked: recorded.size, matched: matched, diffs: diffs,
-                     unmapped: unmapped, unmanageable: unmanage)
+                     unmapped: unmapped, unmanageable: unmanage,
+                     uncovered: uncovered_objects(imports))
         end
 
         # Every emitted file is loaded and built. Anonymous module namespacing
@@ -233,6 +248,30 @@ module Pangea
           'datadog_dashboard_list' => :dashboard_lists,
           'datadog_powerpack' => :powerpacks
         }.freeze
+
+        # Objects the capture holds that emit COULD have declared and did not,
+        # for a reason the operator can fix.
+        #
+        # Without this, a capture that was never reconciled emits 331 instead of
+        # 340 and the gate is green: verify only checks what emit declared, and
+        # everything it declared matches. Nine live powerpacks go unmanaged and
+        # nothing says so -- the same "nothing to check reads as everything is
+        # fine" failure already fixed for an empty capture, in partial form.
+        #
+        # ONLY RECOVERABLE GAPS. A Datadog-managed role, an APM filter whose
+        # filter_type the provider rejects, a retire-tier dashboard, a
+        # terraform-owned monitor -- those are correct exclusions and must stay
+        # silent, or the gate cries wolf about decisions it was told to make.
+        def uncovered_objects(imports)
+          declared = imports.values.map(&:to_s).to_set
+          capture.ids(:powerpacks).reject { |id| declared.include?(id.to_s) }
+                 .map do |id|
+            { kind: :powerpacks, id: id,
+              reason: 'no reconciled body yet -- run `reconcile --kinds powerpacks`' }
+          end
+        rescue Errno::ENOENT
+          []
+        end
 
         SIDECAR_KINDS = {
           'datadog_dashboard_json' => :dashboards,
