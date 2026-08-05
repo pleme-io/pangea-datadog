@@ -15,6 +15,7 @@ require_relative 'absorb/receipt'
 require_relative 'absorb/roundtrip'
 require_relative 'absorb/audit'
 require_relative 'absorb/census'
+require_relative 'absorb/conform'
 
 module Pangea
   module Datadog
@@ -132,6 +133,12 @@ module Pangea
       # counted differently.
       # Read-only and counts only -- see Census for why it must never persist
       # what it reads.
+      # Offline: no credentials, no provider binary, seconds not an hour.
+      def conform(root:, schema_path:, config_path: nil)
+        Conform.run(capture: Capture.new(root), schema_path: schema_path,
+                    rules: config_path ? Config.load(config_path) : nil)
+      end
+
       def census(config_path: nil, account: nil, site: nil, provider_schema: nil)
         cfg = config_path ? Config.load(config_path) : nil
         client =

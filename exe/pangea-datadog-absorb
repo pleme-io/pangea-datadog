@@ -33,6 +33,10 @@ parser = OptionParser.new do |o|
       classify   report provenance and tier over a capture
       emit       generate typed Pangea Ruby from a capture
       verify     prove the generated code state-matches the capture
+      conform    does emitted code conform to the PROVIDER's own schema?
+                 Offline, no credentials, seconds. Catches a provider upgrade
+                 that renames or re-classifies an attribute -- which roundtrip
+                 also catches but only with live creds and about an hour.
       census     what the estate holds that absorb does NOT absorb. Read-only
                  and counts only -- nothing is written. Distinguishes a type
                  with zero objects (an absence) from one the key cannot read
@@ -150,6 +154,28 @@ when 'audit'
                     findings: result.findings)
   rescue StandardError => e
     receipt = Absorb::Receipt.error(command: 'audit', target: File.basename(options[:root]),
+                                    message: e.message)
+    warn e.message
+    emit_receipt(receipt, options[:receipt_dir])
+    exit receipt.exit_code
+  end
+  puts result
+  emit_receipt(receipt, options[:receipt_dir])
+  exit receipt.exit_code
+
+when 'conform'
+  unless options[:provider_schema]
+    warn 'error: --provider-schema is required for conform'
+    exit 2
+  end
+  begin
+    result  = Absorb.conform(root: options[:root], schema_path: options[:provider_schema],
+                             config_path: options[:config])
+    receipt = (result.ok? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
+              .call(command: 'conform', target: File.basename(options[:root]),
+                    findings: result.findings)
+  rescue StandardError => e
+    receipt = Absorb::Receipt.error(command: 'conform', target: File.basename(options[:root]),
                                     message: e.message)
     warn e.message
     emit_receipt(receipt, options[:receipt_dir])

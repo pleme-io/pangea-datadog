@@ -583,6 +583,134 @@ RSpec.describe Absorb do
   # The roundtrip verb decides adoption readiness, so its pure logic is tested
   # here without touching terraform or Datadog. The terraform half is exercised
   # by running the verb against the live estate.
+  describe Absorb::Conform do
+    # conform is GREEN on the real estate, which proves nothing about conform.
+    # Every check below is driven by a schema built to make it fire, because a
+    # check that has never been seen to fail is not evidence.
+    def schema_file(dir, resource_schemas)
+      path = File.join(dir, 'schema.json')
+      File.write(path, JSON.generate({
+                                       'provider_schemas' => {
+                                         'registry.terraform.io/datadog/datadog' =>
+                                           { 'resource_schemas' => resource_schemas }
+                                       }
+                                     }))
+      path
+    end
+
+    def capture_with_monitor(dir)
+      cap = Absorb::Capture.new(File.join(dir, 'estate'))
+      cap.prepare
+      cap.write(:monitors, '123', monitor_payload)
+      cap
+    end
+
+    it 'flags an emitted key the provider does not declare' do
+      Dir.mktmpdir do |dir|
+        path = schema_file(dir, { 'datadog_monitor' => { 'block' => { 'attributes' => {} } } })
+
+        result = Absorb::Conform.run(capture: capture_with_monitor(dir), schema_path: path, rules: rules)
+
+        expect(result).not_to be_ok
+        expect(result.undeclared.map(&:key)).to include('name')
+        expect(result.to_s).to include('UNDECLARED datadog_monitor.name')
+      end
+    end
+
+    # Monitors emit `lifecycle`. It is a terraform meta-argument, accepted on
+    # any resource and absent from every resource schema, so reading it as an
+    # undeclared key would make conform permanently and wrongly red.
+    it 'does not flag a terraform meta-argument as undeclared' do
+      Dir.mktmpdir do |dir|
+        path = schema_file(dir, { 'datadog_monitor' => { 'block' => { 'attributes' => {} } } })
+
+        result = Absorb::Conform.run(capture: capture_with_monitor(dir), schema_path: path, rules: rules)
+
+        expect(result.undeclared.map(&:key)).not_to include('lifecycle')
+      end
+    end
+
+    it 'flags a required attribute the body does not carry' do
+      Dir.mktmpdir do |dir|
+        path = schema_file(dir, {
+                             'datadog_monitor' => {
+                               'block' => {
+                                 'attributes' => { 'a_required_thing' => { 'required' => true } }
+                               }
+                             }
+                           })
+
+        result = Absorb::Conform.run(capture: capture_with_monitor(dir), schema_path: path, rules: rules)
+
+        expect(result.missing_required.map(&:key)).to include('a_required_thing')
+        expect(result).not_to be_ok
+      end
+    end
+
+    it 'flags a computed-only attribute the body sets' do
+      Dir.mktmpdir do |dir|
+        path = schema_file(dir, {
+                             'datadog_monitor' => {
+                               'block' => { 'attributes' => { 'name' => { 'computed' => true } } }
+                             }
+                           })
+
+        result = Absorb::Conform.run(capture: capture_with_monitor(dir), schema_path: path, rules: rules)
+
+        expect(result.computed_only.map(&:key)).to include('name')
+      end
+    end
+
+    it 'does not flag an attribute that is both computed and optional' do
+      Dir.mktmpdir do |dir|
+        path = schema_file(dir, {
+                             'datadog_monitor' => {
+                               'block' => {
+                                 'attributes' => { 'name' => { 'computed' => true, 'optional' => true } }
+                               }
+                             }
+                           })
+
+        result = Absorb::Conform.run(capture: capture_with_monitor(dir), schema_path: path, rules: rules)
+
+        expect(result.computed_only).to be_empty
+      end
+    end
+
+    # A type the schema does not declare cannot be checked. Calling that
+    # conformant would let a provider downgrade silently stop checking a type.
+    it 'reports a type absent from the schema as skipped, not as passing' do
+      Dir.mktmpdir do |dir|
+        path = schema_file(dir, { 'datadog_monitor' => { 'block' => { 'attributes' => {} } } })
+
+        result = Absorb::Conform.run(capture: capture_with_monitor(dir), schema_path: path, rules: rules)
+
+        expect(result.skipped).to include('datadog_role', 'datadog_downtime')
+        expect(result.to_s).to include('NOT checked, not conformant')
+      end
+    end
+
+    it 'refuses a schema document that holds no provider schemas' do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, 'schema.json')
+        File.write(path, JSON.generate({ 'format_version' => '1.0' }))
+
+        expect { Absorb::Conform.run(capture: capture_with_monitor(dir), schema_path: path, rules: rules) }
+          .to raise_error(Absorb::Conform::Error, /no provider_schemas/)
+      end
+    end
+
+    it 'refuses a schema document that is not JSON' do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, 'schema.json')
+        File.write(path, '<html>not json')
+
+        expect { Absorb::Conform.run(capture: capture_with_monitor(dir), schema_path: path, rules: rules) }
+          .to raise_error(Absorb::Conform::Error, /not valid JSON/)
+      end
+    end
+  end
+
   describe Absorb::Census do
     # A client that answers whatever the test says, including refusals.
     def client_answering(map)
