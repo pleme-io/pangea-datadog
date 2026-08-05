@@ -1069,6 +1069,51 @@ RSpec.describe Absorb do
       expect(Absorb::Verify.new(capture: cap, out_dir: File.join(@dir, 'g')).run).to be_ok
     end
 
+    # SINGLY_NESTED_ATTRIBUTES is baked data, so something must stop it drifting
+    # from the declarations it describes. It cannot be read at run time: that
+    # needs the 122-resource layer and dry-struct, and absorb's CLI runs on a
+    # bare ruby without them -- introspecting turned `emit` into a hard failure
+    # outside the gem environment. The specs DO have that environment, so the
+    # check lives here.
+    describe 'the singly-nested attribute table' do
+      it 'matches what the typed resources actually declare' do
+        Absorb::Normalize::SINGLY_NESTED_ATTRIBUTES.each do |resource, recorded|
+          require "pangea/resources/#{resource}/resource"
+          const = resource.to_s.split('_').map(&:capitalize).join
+          klass = Pangea::Resources.const_get(const)
+                                   .resource_definitions.fetch(resource)
+                                   .fetch(:attributes_class)
+
+          declared = klass.schema.select { |key| key.type.valid?({}) && !key.type.valid?([{}]) }
+                          .map(&:name).sort
+
+          expect(recorded.sort).to eq(declared), <<~MSG
+            #{resource} singly-nested attributes drifted.
+              recorded: #{recorded.sort.inspect}
+              declared: #{declared.inspect}
+            Update Normalize::SINGLY_NESTED_ATTRIBUTES.
+          MSG
+        end
+      end
+
+      it 'unwraps a one-element block and leaves a real list alone' do
+        out = Absorb::Normalize.conform_to_declared_types(
+          :datadog_powerpack,
+          { layout: [{ x: 0 }], widget: [{ a: 1 }, { b: 2 }], tags: ['t'], name: 'n' }
+        )
+
+        expect(out[:layout]).to eq({ x: 0 })
+        expect(out[:widget]).to eq([{ a: 1 }, { b: 2 }])
+        expect(out[:tags]).to eq(['t'])
+      end
+
+      it 'leaves a resource with no singly-nested attributes untouched' do
+        attrs = { filter: [{ query: 'q' }] }
+
+        expect(Absorb::Normalize.conform_to_declared_types(:datadog_monitor, attrs)).to eq(attrs)
+      end
+    end
+
     # The provider's own post-import state carries values its own schema
     # rejects. Measured: with this prune 9 of 9 of the estate's powerpacks plan
     # to "No changes"; without it, 0 of 9.

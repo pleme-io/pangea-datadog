@@ -733,7 +733,36 @@ module Pangea
         def powerpack(_payload, normalized)
           return nil if normalized.nil?
 
-          canonicalize(symbolize_deep(normalized))
+          canonicalize(conform_to_declared_types(:datadog_powerpack, symbolize_deep(normalized)))
+        end
+
+        # Terraform provider state represents EVERY nested block as a list, even
+        # one the schema nests singly. The typed Pangea resource declares the
+        # singly-nested ones as Hash, so a machine-derived body type-errors on
+        # the way in -- `datadog_powerpack.layout` is the live case.
+        #
+        # BAKED DATA, not runtime introspection. Reading the declarations at run
+        # time means loading the 122-resource layer, which needs dry-struct, and
+        # absorb's CLI runs on a bare ruby without it -- so introspection turned
+        # `emit` into a hard failure outside the gem environment. This follows
+        # the same shape as MONITOR_OPTION_MAP and LOGS_PROCESSOR_FIELDS: the
+        # provider fact is recorded here and PINNED BY A SPEC that reads the
+        # real declarations, so drift fails the suite rather than the estate.
+        SINGLY_NESTED_ATTRIBUTES = {
+          datadog_powerpack: %i[layout]
+        }.freeze
+
+        def conform_to_declared_types(resource, attrs)
+          singly = SINGLY_NESTED_ATTRIBUTES.fetch(resource, [])
+          return attrs if singly.empty?
+
+          attrs.each_with_object({}) do |(name, value), out|
+            out[name] = singly.include?(name) && one_element_block?(value) ? value.first : value
+          end
+        end
+
+        def one_element_block?(value)
+          value.is_a?(Array) && value.size == 1 && value.first.is_a?(Hash)
         end
 
         # The provider's post-import state is not directly re-usable as config.
