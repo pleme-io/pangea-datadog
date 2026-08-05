@@ -143,6 +143,11 @@ module Pangea
              .uniq.first
         end
 
+        def unavailable_error
+          "no DataDog provider mirror at #{provider_dir}. terraform reads " \
+            "<root>/<hostname>/DataDog/datadog/<version>. #{unavailable_message}"
+        end
+
         def unavailable_message
           nested = nested_mirror_root
           return "did you mean --provider-dir #{nested}" if nested
@@ -153,9 +158,7 @@ module Pangea
         # Sample `per_kind` objects of each kind and plan each one.
         def run(kinds: KINDS.keys, per_kind: 1, credentials:)
           unless provider_available?
-            raise Error, "no DataDog provider mirror at #{provider_dir} -- nothing could be " \
-                         "planned. terraform reads <root>/<hostname>/DataDog/datadog/<version>. " \
-                         "#{unavailable_message}"
+            raise Error, unavailable_error
           end
 
           kinds.flat_map do |kind|
@@ -344,8 +347,14 @@ module Pangea
             'provider' => { 'datadog' => {} },
             'resource' => { resource => { 'probe' => body } }
           ))
-          # A filesystem mirror keeps the run offline and pinned to the provider
-          # the operator actually ships, not whatever the registry serves today.
+          write_tfrc(dir)
+        end
+
+        # A filesystem mirror keeps the run offline and pinned to the provider
+        # the operator actually ships, not whatever the registry serves today.
+        # Shared by the plan path and the schema dump so the two can never
+        # disagree about which provider they are talking about.
+        def write_tfrc(dir)
           File.write(File.join(dir, 'tfrc'), <<~HCL)
             provider_installation {
               filesystem_mirror {
@@ -355,6 +364,38 @@ module Pangea
               direct { exclude = ["registry.terraform.io/DataDog/datadog"] }
             }
           HCL
+        end
+
+        # The provider's own schema, as JSON.
+        #
+        # conform needs one and nothing in this repo could produce one: the
+        # oracle was real but its input existed only on the machine of whoever
+        # happened to have run terraform by hand. An oracle whose input cannot
+        # be reproduced is not a check the project has, it is a check one person
+        # has.
+        #
+        # No credentials and no estate: this dumps a schema, it does not talk to
+        # Datadog. It needs only the provider mirror.
+        def provider_schema
+          raise Error, unavailable_error unless provider_available?
+
+          Dir.mktmpdir('absorb-schema-') do |dir|
+            File.write(File.join(dir, 'main.tf.json'), JSON.pretty_generate(
+              'terraform' => { 'required_providers' => {
+                'datadog' => { 'source' => 'DataDog/datadog' }
+              } }
+            ))
+            write_tfrc(dir)
+            env = { 'TF_CLI_CONFIG_FILE' => File.join(dir, 'tfrc') }
+
+            init = run_tf(dir, env, 'init', '-no-color', '-input=false')
+            raise Error, "terraform init failed: #{tail(init[:err])}" unless init[:ok]
+
+            dump = run_tf(dir, env, 'providers', 'schema', '-json')
+            raise Error, "terraform providers schema failed: #{tail(dump[:err])}" unless dump[:ok]
+
+            dump[:out]
+          end
         end
 
         def terraform_env(dir, credentials)

@@ -168,6 +168,14 @@ module Pangea
         )
       end
 
+      # Dumps the provider's own schema, which is conform's input. Needs the
+      # provider mirror and nothing else -- no credentials, no capture, no
+      # Datadog.
+      def provider_schema(provider_dir:, terraform: 'terraform')
+        Roundtrip.new(capture: nil, provider_dir: provider_dir, terraform: terraform,
+                      rules: Rules.none).provider_schema
+      end
+
       # Offline: no credentials, no provider binary, seconds not an hour. See
       # Conform for what it catches and, more importantly, what it cannot.
       def conform(root:, schema_path:, config_path: nil)

@@ -1021,6 +1021,41 @@ RSpec.describe Absorb do
         expect(rt.send(:provider_available?)).to be(true)
       end
 
+      # conform needs a provider schema and nothing in this repo could produce
+      # one: the oracle was real but its input existed only on the machine of
+      # whoever had run terraform by hand. The schema dump reuses the same
+      # mirror guard, so a wrong --provider-dir fails here the same way.
+      it 'refuses to dump a schema from a parent of the mirror root' do
+        root = File.join(@dir, 'store-path')
+        mirror = File.join(root, 'libexec', 'terraform-providers')
+        FileUtils.mkdir_p(File.join(mirror, 'registry.terraform.io', 'DataDog', 'datadog', '4.10.0'))
+        rt = described_class.new(capture: nil, provider_dir: root, rules: rules)
+
+        expect { rt.provider_schema }
+          .to raise_error(Absorb::Roundtrip::Error, /did you mean --provider-dir/)
+      end
+
+      # A schema dump reads the provider, not the estate. Requiring a capture
+      # would make the input to conform depend on having already captured, which
+      # is backwards.
+      it 'needs no capture to dump a schema' do
+        rt = described_class.new(capture: nil, provider_dir: File.join(@dir, 'nope'), rules: rules)
+
+        expect { rt.provider_schema }
+          .to raise_error(Absorb::Roundtrip::Error, /no DataDog provider mirror/)
+      end
+
+      # The plan path and the schema dump must point at the SAME provider. If
+      # they wrote their own mirror configs, conform could be checking against a
+      # different provider version than the one roundtrip plans with, and both
+      # would look green.
+      it 'writes one mirror config for both the plan path and the schema dump' do
+        rt = described_class.new(capture: capture_with, provider_dir: '/some/mirror', rules: rules)
+        rt.send(:write_tfrc, @dir)
+
+        expect(File.read(File.join(@dir, 'tfrc'))).to include('path    = "/some/mirror"')
+      end
+
       # Mid-run loss: the pre-flight passed, then the provider vanished.
       it 'separates a vanished provider from a genuine import failure' do
         gone = 'Error: could not read package directory: open .terraform/providers/' \
