@@ -1159,6 +1159,69 @@ RSpec.describe Absorb do
       expect(described_class.run(cap).broken.size).to eq(2)
     end
 
+    # A class terraform structurally CANNOT catch. The dashboard plans perfectly
+    # clean -- the reference is just a number inside the widget JSON and the
+    # provider has no idea the thing it names was deleted. Found live: two
+    # dashboards still pointing at monitor 106953745, which returns 404.
+    describe 'dangling references' do
+      def dash(id, alert_id)
+        { 'id' => id, 'title' => "board #{id}",
+          'widgets' => [{ 'definition' => { 'type' => 'alert_graph',
+                                            'alert_id' => alert_id.to_s } }] }
+      end
+
+      it 'reports a widget pointing at a monitor that is not in the estate' do
+        cap = capture_with(monitors: { '1' => { 'id' => 1, 'name' => 'live' } })
+        cap.write(:dashboards, 'd1', dash('d1', 999))
+        result = described_class.run(cap)
+
+        expect(result).not_to be_ok
+        expect(result.dangling.first.detail).to include('999')
+      end
+
+      it 'passes a widget pointing at a monitor that exists' do
+        cap = capture_with(monitors: { '1' => { 'id' => 1, 'name' => 'live' } })
+        cap.write(:dashboards, 'd1', dash('d1', 1))
+
+        expect(described_class.run(cap)).to be_ok
+      end
+
+      # Without this guard, `--kinds dashboards` would report EVERY reference as
+      # dangling -- a flood of false defects from a capture that simply never
+      # fetched the monitors.
+      it 'checks nothing when no monitors were captured at all' do
+        cap = capture_with
+        cap.write(:dashboards, 'd1', dash('d1', 999))
+
+        expect(described_class.run(cap)).to be_ok
+      end
+
+      it 'finds a reference nested inside a group widget' do
+        cap = capture_with(monitors: { '1' => { 'id' => 1, 'name' => 'live' } })
+        cap.write(:dashboards, 'd1', {
+                    'id' => 'd1', 'title' => 'grouped',
+                    'widgets' => [{ 'definition' => {
+                      'type' => 'group',
+                      'widgets' => [{ 'definition' => { 'type' => 'alert_graph',
+                                                        'alert_id' => '999' } }]
+                    } }]
+                  })
+
+        expect(described_class.run(cap).dangling.size).to eq(1)
+      end
+
+      it 'reports an SLO widget naming an SLO that is gone' do
+        cap = capture_with(slos: { 's' => slo('s', '7d') },
+                           monitors: { '1' => { 'id' => 1, 'name' => 'live' } })
+        cap.write(:dashboards, 'd1', {
+                    'id' => 'd1', 'title' => 'slo board',
+                    'widgets' => [{ 'definition' => { 'type' => 'slo', 'slo_id' => 'gone' } }]
+                  })
+
+        expect(described_class.run(cap).dangling.first.detail).to include('gone')
+      end
+    end
+
     # THE distinction. Getting this wrong makes the audit cry wolf on every
     # healthy ephemeral monitor, and then the real defects get ignored with it.
     it 'does NOT fail the gate on a monitor that is merely silent' do

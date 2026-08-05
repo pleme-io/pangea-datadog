@@ -44,27 +44,32 @@ module Pangea
         # "A grouping must be specified for custom checks". Measured across the
         # estate's 6 service checks -- 5 carry `.by(...)` and validate, the one
         # that does not is exactly the monitor terraform refused to plan.
+        GROUP_TYPES = %w[group split_group].freeze
         SERVICE_CHECK = 'service check'
         GROUPING = '.by('
 
         Finding = Struct.new(:id, :name, :detail, keyword_init: true)
 
-        Result = Struct.new(:broken, :silent, :clusters, :monitors, keyword_init: true) do
-          def ok? = broken.empty?
+        Result = Struct.new(:broken, :dangling, :silent, :clusters, :monitors, keyword_init: true) do
+          def ok? = broken.empty? && dangling.empty?
 
           def findings
             {
               'monitors' => monitors,
               'broken' => broken.size,
               'silent' => silent.size,
+              'dangling' => dangling.size,
               'brokenMonitors' => broken.map { |f| { 'id' => f.id, 'detail' => f.detail } },
+              'danglingReferences' => dangling.map { |f| { 'id' => f.id, 'detail' => f.detail } },
               'silentClusters' => clusters.map { |date, names| { 'since' => date, 'count' => names.size } }
             }
           end
 
           def to_s
-            lines = ["audited #{monitors} monitors, broken #{broken.size}, silent #{silent.size}"]
+            lines = ["audited #{monitors} monitors, broken #{broken.size}, " \
+                     "dangling #{dangling.size}, silent #{silent.size}"]
             broken.each { |f| lines << "  BROKEN #{f.id} #{f.name} -- #{f.detail}" }
+            dangling.each { |f| lines << "  DANGLING #{f.id} #{f.name} -- #{f.detail}" }
             clusters.each do |date, names|
               lines << "  SILENT since #{date}: #{names.size} monitors went No Data together"
             end
@@ -88,8 +93,65 @@ module Pangea
             silent << entry if entry
           end
 
-          Result.new(broken: broken.sort_by(&:id), silent: silent.sort_by { |s| s[:since].to_s },
+          Result.new(broken: broken.sort_by(&:id), dangling: dangling_references(capture, slos),
+                     silent: silent.sort_by { |s| s[:since].to_s },
                      clusters: cluster(silent), monitors: monitors)
+        end
+
+        # A dashboard widget pointing at a monitor or SLO that no longer exists.
+        #
+        # TERRAFORM CANNOT SEE THIS. The dashboard plans perfectly clean: the
+        # reference is just a number inside the widget JSON, and the provider has
+        # no idea the thing it names was deleted. It renders as a broken widget
+        # and nothing anywhere reports it. Found in the live estate: two
+        # dashboards still pointing at monitor 106953745, which returns 404.
+        #
+        # GUARDED ON CAPTURE COMPLETENESS. Against a partial capture -- say
+        # `--kinds dashboards` -- every reference would look dangling and the
+        # audit would emit a flood of false defects. No monitors captured means
+        # no monitor references are checked, and the same for SLOs.
+        def dangling_references(capture, slos)
+          monitors = capture.ids(:monitors)
+          found = []
+
+          capture.each(:dashboards) do |id, payload|
+            each_widget(payload['widgets']) do |definition|
+              found.concat(widget_references(definition, id, payload, monitors, slos))
+            end
+          end
+          found.sort_by(&:id)
+        rescue Errno::ENOENT
+          []
+        end
+
+        def each_widget(widgets, &block)
+          Array(widgets).each do |widget|
+            definition = widget['definition'] || {}
+            if GROUP_TYPES.include?(definition['type'])
+              each_widget(definition['widgets'], &block)
+            else
+              block.call(definition)
+            end
+          end
+        end
+
+        def widget_references(definition, id, payload, monitors, slos)
+          title = payload['title'].to_s
+          case definition['type']
+          when 'alert_graph'
+            alert = definition['alert_id'].to_s
+            return [] if monitors.empty? || alert.empty? || monitors.include?(alert)
+
+            [Finding.new(id: id, name: title, detail: "alert_graph widget references monitor #{alert}, " \
+                                                      'which is not in the estate')]
+          when 'slo', 'slo_list'
+            slo = (definition['slo_id'] || definition.dig('query', 'slo_id')).to_s
+            return [] if slos.empty? || slo.empty? || slos.key?(slo)
+
+            [Finding.new(id: id, name: title, detail: "#{definition['type']} widget references SLO #{slo}, " \
+                                                      'which is not in the estate')]
+          else []
+          end
         end
 
         # No rescue. An unreadable SLO capture means this audit cannot answer,
