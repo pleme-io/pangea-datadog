@@ -42,7 +42,16 @@ module Pangea
           monitors: { resource: 'datadog_monitor', capture: :monitors },
           dashboards: { resource: 'datadog_dashboard_json', capture: :dashboards },
           slos: { resource: 'datadog_service_level_objective', capture: :slos },
-          downtimes: { resource: 'datadog_downtime', capture: :downtimes }
+          downtimes: { resource: 'datadog_downtime', capture: :downtimes },
+          # One endpoint, two resources: `is_read_only` decides which. They are
+          # separate kinds here so the pass rate is reported per resource --
+          # a custom pipeline carries a full processor chain and an integration
+          # pipeline carries one boolean, and averaging them hides the hard one.
+          logs_custom_pipelines: { resource: 'datadog_logs_custom_pipeline', capture: :logs_pipelines },
+          logs_integration_pipelines: { resource: 'datadog_logs_integration_pipeline',
+                                        capture: :logs_pipelines },
+          logs_metrics: { resource: 'datadog_logs_metric', capture: :logs_metrics },
+          logs_indexes: { resource: 'datadog_logs_index', capture: :logs_indexes }
         }.freeze
 
         Outcome = Struct.new(:kind, :id, :name, :status, :detail, keyword_init: true) do
@@ -81,6 +90,10 @@ module Pangea
           case kind
           when :monitors
             ids.select { |id| rules.adopt?(capture.read(:monitors, id)) }
+          when :logs_custom_pipelines
+            ids.reject { |id| Normalize.logs_pipeline_read_only?(capture.read(:logs_pipelines, id)) }
+          when :logs_integration_pipelines
+            ids.select { |id| Normalize.logs_pipeline_read_only?(capture.read(:logs_pipelines, id)) }
           when :dashboards
             twins = rules.dedupe_identical? ? Classify.twin_index(capture) : {}
             ids.reject do |id|
@@ -193,6 +206,10 @@ module Pangea
             stringify(Normalize.dashboard_json_for(payload, id && capture.normalized(:dashboards, id)))
           when :slos then stringify(Normalize.slo(payload))
           when :downtimes then stringify(Normalize.downtime(payload))
+          when :logs_custom_pipelines then stringify(Normalize.logs_custom_pipeline(payload))
+          when :logs_integration_pipelines then stringify(Normalize.logs_integration_pipeline(payload))
+          when :logs_metrics then stringify(Normalize.logs_metric(payload))
+          when :logs_indexes then stringify(Normalize.logs_index(payload))
           else raise Error, "no terraform body for #{kind}"
           end
         end

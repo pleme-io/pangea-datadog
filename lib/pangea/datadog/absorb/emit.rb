@@ -69,6 +69,13 @@ module Pangea
           imports.merge!(emit_dashboards)
           imports.merge!(emit_simple(:slos, :datadog_service_level_objective, 'slos') { |p| Normalize.slo(p) })
           imports.merge!(emit_simple(:downtimes, :datadog_downtime, 'downtimes') { |p| Normalize.downtime(p) })
+          imports.merge!(emit_logs_pipelines)
+          imports.merge!(emit_simple(:logs_metrics, :datadog_logs_metric, 'logs_metrics') do |p|
+            Normalize.logs_metric(p)
+          end)
+          imports.merge!(emit_simple(:logs_indexes, :datadog_logs_index, 'logs_indexes') do |p|
+            Normalize.logs_index(p)
+          end)
           File.write(File.join(out_dir, 'imports.json'), "#{JSON.pretty_generate(imports)}\n")
           imports
         end
@@ -109,6 +116,41 @@ module Pangea
           groups.each do |group, entries|
             write_template("monitors_#{group}", entries.sort_by(&:first)) do |slug, attrs|
               render_resource(:datadog_monitor, slug, attrs)
+            end
+          end
+
+          imports
+        end
+
+        # Datadog's own integration pipelines and an account's custom pipelines
+        # come back from ONE endpoint but are TWO provider resources -- the
+        # read-only ones carry nothing but `is_enabled`. Emitting a read-only
+        # pipeline as a custom one would ask terraform to recreate a pipeline
+        # Datadog already ships, next to the original.
+        def emit_logs_pipelines
+          imports = {}
+          custom = []
+          integration = []
+
+          capture.each(:logs_pipelines) do |id, payload|
+            slug = resource_slug(payload['name'], id)
+            if Normalize.logs_pipeline_read_only?(payload)
+              integration << [slug, Normalize.logs_integration_pipeline(payload)]
+              imports["datadog_logs_integration_pipeline.#{slug}"] = id
+            else
+              custom << [slug, Normalize.logs_custom_pipeline(payload)]
+              imports["datadog_logs_custom_pipeline.#{slug}"] = id
+            end
+          end
+
+          unless custom.empty?
+            write_template('logs_pipelines', custom.sort_by(&:first)) do |slug, attrs|
+              render_resource(:datadog_logs_custom_pipeline, slug, attrs)
+            end
+          end
+          unless integration.empty?
+            write_template('logs_integration_pipelines', integration.sort_by(&:first)) do |slug, attrs|
+              render_resource(:datadog_logs_integration_pipeline, slug, attrs)
             end
           end
 

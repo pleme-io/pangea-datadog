@@ -49,7 +49,7 @@ parser = OptionParser.new do |o|
   o.on('--site SITE', 'datadog site (config wins)') { |v| options[:site] = v }
   o.on('--receipt-dir DIR', 'write a typed JSON receipt per run (keyway)') { |v| options[:receipt_dir] = v }
   o.on('--provider-dir DIR', 'terraform provider filesystem mirror (roundtrip)') { |v| options[:provider_dir] = v }
-  o.on('--kinds LIST', 'comma-separated: monitors,dashboards,slos,downtimes') { |v| options[:kinds] = v.split(',').map(&:strip).map(&:to_sym) }
+  o.on('--kinds LIST', 'comma-separated: monitors,dashboards,slos,downtimes,logs_pipelines,logs_metrics,logs_indexes') { |v| options[:kinds] = v.split(',').map(&:strip).map(&:to_sym) }
   o.on('--per-kind N', Integer, 'objects to sample per kind (default 1)') { |v| options[:per_kind] = v }
   o.on('-h', '--help') { puts o; exit 0 }
 end
@@ -97,6 +97,7 @@ when 'capture'
     config_path: options[:config],
     account: options[:account],
     site: options[:site],
+    kinds: options[:kinds],
     progress: ->(kind, n) { warn("  #{kind}: #{n}") if (n % 25).zero? }
   )
   puts JSON.pretty_generate(counts)

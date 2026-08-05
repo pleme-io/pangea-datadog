@@ -645,6 +645,175 @@ RSpec.describe Absorb do
     end
   end
 
+  # The logs configuration layer: 12 pipelines, 8 metrics, 1 index in the
+  # measured estate.
+  describe 'the logs configuration layer' do
+    let(:custom_pipeline) do
+      { 'id' => 'abc', 'type' => 'pipeline', 'name' => 'GeoIP Pipeline',
+        'is_enabled' => false, 'is_read_only' => false,
+        'filter' => { 'query' => '' },
+        'processors' => [{ 'name' => 'geo', 'is_enabled' => true, 'sources' => ['@RemoteAddr'],
+                           'target' => '@RemoteAddr.geoip',
+                           'ip_processing_behavior' => 'do-nothing', 'type' => 'geo-ip-parser' }] }
+    end
+
+    let(:integration_pipeline) do
+      custom_pipeline.merge('id' => 'def', 'name' => 'Nginx', 'is_read_only' => true, 'is_enabled' => true)
+    end
+
+    # Datadog ships its own pipelines into every account. The provider models
+    # them as a different resource carrying only is_enabled, so emitting one as
+    # a custom pipeline would recreate Datadog's own pipeline beside it.
+    it 'splits read-only integration pipelines from custom ones' do
+      expect(Absorb::Normalize.logs_pipeline_read_only?(integration_pipeline)).to be(true)
+      expect(Absorb::Normalize.logs_pipeline_read_only?(custom_pipeline)).to be(false)
+    end
+
+    it 'carries nothing but the switch for an integration pipeline' do
+      expect(Absorb::Normalize.logs_integration_pipeline(integration_pipeline))
+        .to eq({ is_enabled: true })
+    end
+
+    it 'maps a processor type to its provider block name' do
+      body = Absorb::Normalize.logs_custom_pipeline(custom_pipeline)
+
+      expect(body[:processor].first.keys).to eq([:geo_ip_parser])
+    end
+
+    # Verified against the real provider schema: geo_ip_parser declares
+    # is_enabled/name/sources/target and nothing else, so carrying the API's
+    # ip_processing_behavior would emit a body terraform rejects.
+    it 'drops a server-only processor field the provider does not model' do
+      body = Absorb::Normalize.logs_custom_pipeline(custom_pipeline)
+
+      expect(body[:processor].first[:geo_ip_parser].first).not_to have_key(:ip_processing_behavior)
+      expect(body[:processor].first[:geo_ip_parser].first[:target]).to eq('@RemoteAddr.geoip')
+    end
+
+    # A silently dropped processor changes what a pipeline does to every log
+    # flowing through it AND state-matches perfectly while doing it, because
+    # verify only checks what the emitted code declares.
+    it 'raises on a processor type it does not know' do
+      expect { Absorb::Normalize.logs_processor({ 'type' => 'brand-new-thing' }) }
+        .to raise_error(Absorb::Normalize::Error, /unknown log processor type/)
+    end
+
+    it 'lifts a logs metric out of its attributes envelope' do
+      body = Absorb::Normalize.logs_metric(
+        { 'id' => 'test.access.http.ok', 'type' => 'logs_metrics',
+          'attributes' => { 'filter' => { 'query' => 'ACCESS' }, 'group_by' => [],
+                            'compute' => { 'aggregation_type' => 'count' } } }
+      )
+
+      expect(body[:name]).to eq('test.access.http.ok')
+      expect(body[:filter]).to eq([{ query: 'ACCESS' }])
+      expect(body[:compute]).to eq([{ aggregation_type: 'count' }])
+      expect(body).not_to have_key(:group_by)
+    end
+
+    it 'renames the index fields the API and provider disagree about' do
+      body = Absorb::Normalize.logs_index(
+        { 'name' => 'all', 'filter' => { 'query' => '' }, 'num_retention_days' => 15,
+          'daily_limit' => 200_000_000, 'is_rate_limited' => false,
+          'num_flex_logs_retention_days' => 0, 'exclusion_filters' => [] }
+      )
+
+      expect(body[:retention_days]).to eq(15)
+      expect(body[:flex_retention_days]).to eq(0)
+      expect(body[:disable_daily_limit]).to be(false)
+      expect(body).not_to have_key(:num_retention_days)
+    end
+
+    it 'reports the index state the provider declines to model' do
+      u = Absorb::Normalize.logs_unmapped('datadog_logs_index',
+                                          { 'name' => 'all', 'is_rate_limited' => true })
+
+      expect(u[:fields]).to be_empty
+      expect(u[:unmanageable]).to eq(['is_rate_limited'])
+    end
+
+    it 'emits the two pipeline kinds as two different resources' do
+      Dir.mktmpdir do |dir|
+        cap = Absorb::Capture.new(File.join(dir, 'estate'))
+        cap.prepare
+        cap.write(:logs_pipelines, 'abc', custom_pipeline)
+        cap.write(:logs_pipelines, 'def', integration_pipeline)
+        imports = Absorb::Emit.new(capture: cap, out_dir: File.join(dir, 'g'), rules: rules).run
+
+        expect(imports).to eq({ 'datadog_logs_custom_pipeline.geoip_pipeline_abc' => 'abc',
+                                'datadog_logs_integration_pipeline.nginx_def' => 'def' })
+      end
+    end
+  end
+
+  # Terraform parses every JSON string value as a TEMPLATE. Absorbed text is
+  # data, and terraform read it as syntax: two of the five monitors previously
+  # written off as estate defects were actually this.
+  describe 'terraform template escaping' do
+    def escape(v) = Absorb::Normalize.escape_terraform_templates(v)
+
+    it 'escapes an interpolation opener in absorbed text' do
+      expect(escape('Site24x7 ${{event.host.name}}')).to eq('Site24x7 $${{event.host.name}}')
+    end
+
+    it 'escapes a directive opener in a grok rule' do
+      expect(escape('%{date("yyyy"):date}')).to eq('%%{date("yyyy"):date}')
+    end
+
+    # Applied by canonicalize, which several paths reach; a second pass must
+    # not produce %%%{.
+    it 'is idempotent' do
+      once = escape('%{a} ${b}')
+
+      expect(escape(once)).to eq(once)
+    end
+
+    it 'reaches nested values, not just the top level' do
+      expect(escape({ a: [{ b: '%{x}' }] })).to eq({ a: [{ b: '%%{x}' }] })
+    end
+
+    it 'leaves text with no template sequence untouched' do
+      expect(escape('avg(last_5m):avg:rabbitmq.node.mem_used{*} > 90'))
+        .to eq('avg(last_5m):avg:rabbitmq.node.mem_used{*} > 90')
+    end
+
+    it 'escapes through a monitor body' do
+      payload = monitor_payload.merge('name' => 'Site24x7 ${{event.host.name}}')
+
+      expect(Absorb::Normalize.monitor(payload)[:name]).to eq('Site24x7 $${{event.host.name}}')
+    end
+  end
+
+  # The API nests a LIST under `recurrences`; the provider names the same thing
+  # `recurrence`. Both sides carried the same wrong key, so attribute-level
+  # state matching could never see it -- only a real plan could.
+  describe 'monitor custom schedule' do
+    it 'renames recurrences to the provider block name' do
+      out = Absorb::Normalize.monitor_scheduling_options(
+        { 'custom_schedule' => { 'recurrences' => [{ 'rrule' => 'FREQ=WEEKLY',
+                                                     'timezone' => 'Asia/Jerusalem' }] } }
+      )
+
+      expect(out['custom_schedule']).to eq(
+        { 'recurrence' => [{ rrule: 'FREQ=WEEKLY', timezone: 'Asia/Jerusalem' }] }
+      )
+    end
+
+    it 'keeps only the fields the provider declares' do
+      out = Absorb::Normalize.monitor_scheduling_options(
+        { 'custom_schedule' => { 'recurrences' => [{ 'rrule' => 'X', 'unknown_field' => 1 }] } }
+      )
+
+      expect(out['custom_schedule']['recurrence'].first).to eq({ rrule: 'X' })
+    end
+
+    it 'passes an evaluation-window-only scheduling block through' do
+      value = { 'evaluation_window' => { 'day_starts' => '04:00' } }
+
+      expect(Absorb::Normalize.monitor_scheduling_options(value)).to eq(value)
+    end
+  end
+
   # The provider-normalized sidecar, written by `reconcile`.
   #
   # It exists because the Datadog provider's read and plan normalizations

@@ -21,7 +21,9 @@ module Pangea
           @root = root
         end
 
-        def self.run(client:, root:, kinds: %i[monitors dashboards slos downtimes], progress: nil)
+        DEFAULT_KINDS = %i[monitors dashboards slos downtimes logs_pipelines logs_metrics logs_indexes].freeze
+
+        def self.run(client:, root:, kinds: DEFAULT_KINDS, progress: nil)
           capture = new(root)
           capture.prepare
           counts = {}
@@ -55,6 +57,30 @@ module Pangea
             downtimes.each { |d| capture.write(:downtimes, d.fetch('id').to_s, d) }
             counts[:downtimes] = downtimes.size
             progress&.call(:downtimes, downtimes.size)
+          end
+
+          # The logs configuration layer. A pipeline's id is opaque; a metric's
+          # id IS its name; an index has no id at all and is addressed by name,
+          # which is also how terraform imports it.
+          if kinds.include?(:logs_pipelines)
+            pipelines = client.logs_pipelines
+            pipelines.each { |p| capture.write(:logs_pipelines, p.fetch('id'), p) }
+            counts[:logs_pipelines] = pipelines.size
+            progress&.call(:logs_pipelines, pipelines.size)
+          end
+
+          if kinds.include?(:logs_metrics)
+            metrics = client.logs_metrics
+            metrics.each { |m| capture.write(:logs_metrics, m.fetch('id'), m) }
+            counts[:logs_metrics] = metrics.size
+            progress&.call(:logs_metrics, metrics.size)
+          end
+
+          if kinds.include?(:logs_indexes)
+            indexes = client.logs_indexes
+            indexes.each { |i| capture.write(:logs_indexes, i.fetch('name'), i) }
+            counts[:logs_indexes] = indexes.size
+            progress&.call(:logs_indexes, indexes.size)
           end
 
           capture.write_manifest(counts, site: client.site)
@@ -118,10 +144,14 @@ module Pangea
           ids(kind).each { |id| yield(id, JSON.parse(File.read(path(kind, id)))) }
         end
 
+        # MERGES. A partial capture (`--kinds logs_metrics`) must not erase the
+        # counts of the kinds it did not fetch, or the manifest would claim the
+        # estate is whatever the last narrow run happened to touch.
         def write_manifest(counts, site:)
+          merged = manifest.fetch('counts', {}).merge(counts.transform_keys(&:to_s))
           File.write(
             File.join(root, MANIFEST),
-            "#{JSON.pretty_generate('site' => site, 'counts' => counts)}\n"
+            "#{JSON.pretty_generate('site' => site, 'counts' => merged.sort.to_h)}\n"
           )
         end
 

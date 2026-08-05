@@ -140,6 +140,10 @@ module Pangea
                 Normalize.dashboard_json_for(payload, capture.normalized(:dashboards, id))
               when 'datadog_service_level_objective' then Normalize.slo(payload)
               when 'datadog_downtime' then Normalize.downtime(payload)
+              when 'datadog_logs_custom_pipeline' then Normalize.logs_custom_pipeline(payload)
+              when 'datadog_logs_integration_pipeline' then Normalize.logs_integration_pipeline(payload)
+              when 'datadog_logs_metric' then Normalize.logs_metric(payload)
+              when 'datadog_logs_index' then Normalize.logs_index(payload)
               else Normalize.dashboard(payload)
               end
 
@@ -199,7 +203,11 @@ module Pangea
         KIND_TO_CAPTURE = {
           'datadog_monitor' => :monitors,
           'datadog_service_level_objective' => :slos,
-          'datadog_downtime' => :downtimes
+          'datadog_downtime' => :downtimes,
+          'datadog_logs_custom_pipeline' => :logs_pipelines,
+          'datadog_logs_integration_pipeline' => :logs_pipelines,
+          'datadog_logs_metric' => :logs_metrics,
+          'datadog_logs_index' => :logs_indexes
         }.freeze
 
         def load_payload(kind, id)
@@ -223,6 +231,10 @@ module Pangea
             [u[:fields], u[:unmanageable]]
           when 'datadog_downtime'
             u = Normalize.downtime_unmapped(payload)
+            [u[:fields], u[:unmanageable]]
+          when 'datadog_logs_custom_pipeline', 'datadog_logs_integration_pipeline',
+               'datadog_logs_metric', 'datadog_logs_index'
+            u = Normalize.logs_unmapped(kind, payload)
             [u[:fields], u[:unmanageable]]
           else
             [Normalize.dashboard_unmapped(payload), []]

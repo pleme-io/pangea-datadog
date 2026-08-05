@@ -21,6 +21,8 @@ module Pangea
       # The provider flattens `options` to the top level and renames two of its
       # members. Everything else is a straight lift.
       module Normalize
+        Error = Class.new(StandardError)
+
         module_function
 
         # options key => terraform attribute name.
@@ -53,6 +55,29 @@ module Pangea
           'thresholds' => :monitor_thresholds,
           'threshold_windows' => :monitor_threshold_windows
         }.freeze
+
+        # The API nests a LIST under `recurrences`; the provider names the same
+        # thing `recurrence` and models it as repeated blocks. Passing the API
+        # shape through verbatim produced `No argument or block type is named
+        # "recurrences"` -- a hard plan error, invisible to attribute-level
+        # state matching because both sides carried the same wrong key.
+        MONITOR_RECURRENCE_FIELDS = %w[rrule start timezone].freeze
+
+        def monitor_scheduling_options(value)
+          return value unless value.is_a?(Hash)
+
+          out = value.dup
+          custom = out['custom_schedule'] || out[:custom_schedule]
+          return out unless custom.is_a?(Hash)
+
+          recurrences = custom['recurrences'] || custom[:recurrences]
+          return out if recurrences.nil?
+
+          out['custom_schedule'] = {
+            'recurrence' => Array(recurrences).map { |r| compact_symbolized(r, MONITOR_RECURRENCE_FIELDS) }
+          }
+          out
+        end
 
         # Present in the API response, owned by Datadog, never authored.
         # `silenced` is deliberately here: it is mute state, not configuration,
@@ -127,6 +152,10 @@ module Pangea
             next if value.nil?
 
             attrs[tf_key] = value
+          end
+
+          if attrs.key?(:scheduling_options)
+            attrs[:scheduling_options] = monitor_scheduling_options(attrs[:scheduling_options])
           end
 
           # The provider declares notify_no_data and no_data_timeframe MUTUALLY
@@ -261,7 +290,7 @@ module Pangea
         end
 
         def dashboard_json(payload)
-          { dashboard: JSON.generate(dashboard_json_body(payload)) }
+          { dashboard: escape_terraform_templates(JSON.generate(dashboard_json_body(payload))) }
         end
 
         # Prefers a recorded provider-normalized body when one exists. Emit and
@@ -270,7 +299,7 @@ module Pangea
         def dashboard_json_for(payload, normalized)
           return dashboard_json(payload) if normalized.nil?
 
-          { dashboard: JSON.generate(deep_sort(normalized)) }
+          { dashboard: escape_terraform_templates(JSON.generate(deep_sort(normalized))) }
         end
 
         # Nothing can be silently lost on the JSON path -- the body is carried
@@ -468,13 +497,200 @@ module Pangea
         # Order-insensitive where Datadog is order-insensitive (tags), stable
         # everywhere else. Widget order is meaningful (it is the layout), so it
         # is preserved.
+        # The single tail every attribute body passes through: stable key order,
+        # stable nested order, and terraform-literal text. Escaping here rather
+        # than at each call site is what keeps emit, verify and roundtrip from
+        # disagreeing about what the body says.
         def canonicalize(attrs)
           out = {}
           attrs.keys.sort.each do |key|
             value = attrs[key]
             out[key] = key == :tags ? Array(value).sort : deep_sort(value)
           end
-          out
+          escape_terraform_templates(out)
+        end
+
+        # ── the logs configuration layer ─────────────────────────────────
+
+        # A log processor's provider block name is its API type with dashes
+        # swapped for underscores, and each block carries only the fields the
+        # provider declares. Verified against the real provider schema
+        # (DataDog/datadog 4.10.0, `terraform providers schema -json`), not
+        # inferred: `geo-ip-parser` returns `ip_processing_behavior` from the
+        # API and the provider models no such field, so keeping it would emit a
+        # body terraform rejects.
+        #
+        # An unknown type RAISES. A silently dropped processor changes what a
+        # pipeline does to every log flowing through it, and would state-match
+        # perfectly while doing it -- the emitted code simply would not mention
+        # the processor, and verify only checks what the code declares.
+        LOGS_PROCESSOR_FIELDS = {
+          'arithmetic_processor' => %w[expression is_enabled is_replace_missing name target],
+          'attribute_remapper' => %w[is_enabled name override_on_conflict preserve_source source_type
+                                     sources target target_format target_type],
+          'category_processor' => %w[is_enabled name target],
+          'date_remapper' => %w[is_enabled name sources],
+          'geo_ip_parser' => %w[is_enabled name sources target],
+          'grok_parser' => %w[is_enabled name samples source],
+          'message_remapper' => %w[is_enabled name sources],
+          'service_remapper' => %w[is_enabled name sources],
+          'status_remapper' => %w[is_enabled name sources],
+          'url_parser' => %w[is_enabled name normalize_ending_slashes sources target],
+          'user_agent_parser' => %w[is_enabled is_encoded name sources target]
+        }.freeze
+
+        # Datadog ships its own integration pipelines (Nginx, MySQL, Redis …)
+        # into every account. They are `is_read_only` and the provider models
+        # them as a DIFFERENT resource carrying only `is_enabled` -- emitting one
+        # as a custom pipeline would try to recreate Datadog's own pipeline
+        # alongside it. 9 of this estate's 12 pipelines are of this kind.
+        def logs_pipeline_read_only?(payload)
+          payload['is_read_only'] == true
+        end
+
+        def logs_integration_pipeline(payload)
+          { is_enabled: payload['is_enabled'] == true }
+        end
+
+        def logs_custom_pipeline(payload)
+          canonicalize(
+            name: payload['name'].to_s,
+            is_enabled: payload['is_enabled'] == true,
+            filter: [{ query: payload.dig('filter', 'query').to_s }],
+            processor: Array(payload['processors']).map { |p| logs_processor(p) }
+          )
+        end
+
+        def logs_processor(processor)
+          block = processor['type'].to_s.tr('-', '_')
+          fields = LOGS_PROCESSOR_FIELDS[block]
+          raise Error, "unknown log processor type #{processor['type'].inspect}" if fields.nil?
+
+          body = fields.each_with_object({}) do |f, h|
+            h[f.to_sym] = processor[f] unless processor[f].nil?
+          end
+          body[:grok] = [logs_grok(processor['grok'])] if block == 'grok_parser'
+          body[:category] = logs_categories(processor['categories']) if block == 'category_processor'
+
+          { block.to_sym => [body] }
+        end
+
+        def logs_grok(grok)
+          { support_rules: grok.to_h['support_rules'].to_s,
+            match_rules: grok.to_h['match_rules'].to_s }
+        end
+
+        def logs_categories(categories)
+          Array(categories).map do |c|
+            { name: c['name'].to_s, filter: [{ query: c.dig('filter', 'query').to_s }] }
+          end
+        end
+
+        # A logs metric's API `id` IS its name, and its real body hides under
+        # `attributes`.
+        def logs_metric(payload)
+          attributes = payload['attributes'] || {}
+          attrs = {
+            name: payload['id'].to_s,
+            filter: [{ query: attributes.dig('filter', 'query').to_s }],
+            compute: [compact_symbolized(attributes['compute'], %w[aggregation_type include_percentiles path])]
+          }
+          group_by = Array(attributes['group_by'])
+                     .map { |g| compact_symbolized(g, %w[path tag_name]) }
+          attrs[:group_by] = group_by unless group_by.empty?
+          canonicalize(attrs)
+        end
+
+        # An index cannot be CREATED through the API at all, so this body only
+        # ever describes something already there -- which is exactly absorb's
+        # model. The API's names differ from the provider's on three fields.
+        def logs_index(payload)
+          attrs = {
+            name: payload['name'].to_s,
+            filter: [{ query: payload.dig('filter', 'query').to_s }],
+            retention_days: payload['num_retention_days'],
+            disable_daily_limit: payload['daily_limit'].nil?
+          }
+          attrs[:daily_limit] = payload['daily_limit'] unless payload['daily_limit'].nil?
+          unless payload['num_flex_logs_retention_days'].nil?
+            attrs[:flex_retention_days] = payload['num_flex_logs_retention_days']
+          end
+          unless payload['daily_limit_warning_threshold_percentage'].nil?
+            attrs[:daily_limit_warning_threshold_percentage] =
+              payload['daily_limit_warning_threshold_percentage']
+          end
+          reset = payload['daily_limit_reset']
+          attrs[:daily_limit_reset] = [compact_symbolized(reset, %w[reset_time reset_utc_offset])] if reset
+          filters = Array(payload['exclusion_filters']).map { |f| logs_exclusion_filter(f) }
+          attrs[:exclusion_filter] = filters unless filters.empty?
+          canonicalize(attrs.compact)
+        end
+
+        def logs_exclusion_filter(payload)
+          { name: payload['name'].to_s,
+            is_enabled: payload.dig('filter', 'sample_rate') ? true : payload['is_enabled'] == true,
+            filter: [{ query: payload.dig('filter', 'query').to_s,
+                       sample_rate: payload.dig('filter', 'sample_rate') }.compact] }
+        end
+
+        # Structural keys carry the object's identity or discriminate which
+        # resource it becomes. They are consumed by the emitter, not lost, so
+        # reporting them as oversights would be noise.
+        LOGS_STRUCTURAL = {
+          'datadog_logs_custom_pipeline' => %w[id type is_read_only name is_enabled filter processors],
+          'datadog_logs_integration_pipeline' => %w[id type is_enabled],
+          'datadog_logs_metric' => %w[id type attributes],
+          'datadog_logs_index' => %w[name filter num_retention_days daily_limit daily_limit_reset
+                                     daily_limit_warning_threshold_percentage exclusion_filters
+                                     num_flex_logs_retention_days]
+        }.freeze
+
+        # Real state the provider declines to model, reported so the gap is
+        # visible rather than discovered later. A read-only integration pipeline
+        # is mostly this: the provider exposes only its on/off switch, so its
+        # name, filter and processors are Datadog's to own, not ours.
+        LOGS_UNMANAGEABLE = {
+          'datadog_logs_custom_pipeline' => %w[],
+          'datadog_logs_integration_pipeline' => %w[name filter processors is_read_only],
+          'datadog_logs_metric' => %w[],
+          'datadog_logs_index' => %w[is_rate_limited]
+        }.freeze
+
+        def logs_unmapped(kind, payload)
+          structural = LOGS_STRUCTURAL.fetch(kind, [])
+          unmanageable = LOGS_UNMANAGEABLE.fetch(kind, [])
+          leftover = payload.keys - structural - unmanageable
+          present = unmanageable.select { |k| payload.key?(k) && !blank?(payload[k]) }
+          { fields: leftover.sort, unmanageable: present.sort }
+        end
+
+        # Terraform parses every JSON string value as a TEMPLATE, so `${` opens
+        # an interpolation and `%{` opens a directive. Absorbed text is data --
+        # a grok rule `%{date("..."):date}`, a monitor named
+        # `Site24x7 ${{event.host.name}}` -- and terraform reads both as syntax,
+        # failing the plan outright.
+        #
+        # Escaping is safe HERE and nowhere else in Pangea: absorb never emits an
+        # intentional interpolation, so every string it produces is literal by
+        # construction. The general renderer cannot do this, because there a
+        # `${datadog_monitor.x.id}` reference is meant to interpolate.
+        #
+        # Idempotent by construction -- the lookbehinds skip an already-escaped
+        # sequence, so applying it twice cannot produce `%%%{`.
+        def escape_terraform_templates(value)
+          case value
+          when String then value.gsub(/(?<!\$)\$\{/, '$${').gsub(/(?<!%)%\{/, '%%{')
+          when Array then value.map { |v| escape_terraform_templates(v) }
+          when Hash then value.transform_values { |v| escape_terraform_templates(v) }
+          else value
+          end
+        end
+
+        def compact_symbolized(hash, keys)
+          keys.each_with_object({}) do |k, h|
+            v = hash.to_h[k]
+            h[k.to_sym] = v unless v.nil?
+          end
         end
 
         def deep_sort(value)

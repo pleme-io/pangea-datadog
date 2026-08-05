@@ -122,6 +122,20 @@ module Pangea
           get_json('/api/v1/downtime')
         end
 
+        # The logs configuration layer. Pipelines come back as a bare array; the
+        # v2 metrics endpoint wraps in `data`; indexes wrap in `indexes`.
+        def logs_pipelines
+          get_json('/api/v1/logs/config/pipelines')
+        end
+
+        def logs_metrics
+          get_json('/api/v2/logs/config/metrics').fetch('data', [])
+        end
+
+        def logs_indexes
+          get_json('/api/v1/logs/config/indexes').fetch('indexes', [])
+        end
+
         private
 
         def get_json(path)

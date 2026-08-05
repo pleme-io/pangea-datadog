@@ -45,7 +45,7 @@ module Pangea
         path ? Rules.from(Config.load(path)) : Rules.none
       end
 
-      def capture(root:, config_path: nil, account: nil, site: nil, progress: nil)
+      def capture(root:, config_path: nil, account: nil, site: nil, progress: nil, kinds: nil)
         cfg = config_path ? Config.load(config_path) : nil
         client =
           if cfg
@@ -53,7 +53,8 @@ module Pangea
           else
             Client.for_account(account, site: site || Client::DEFAULT_SITE)
           end
-        Capture.run(client: client, root: root, progress: progress)
+        Capture.run(client: client, root: root, progress: progress,
+                    kinds: kinds || Capture::DEFAULT_KINDS)
       end
 
       def emit(root:, out_dir:, config_path: nil)
