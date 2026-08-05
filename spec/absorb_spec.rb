@@ -583,6 +583,135 @@ RSpec.describe Absorb do
   # The roundtrip verb decides adoption readiness, so its pure logic is tested
   # here without touching terraform or Datadog. The terraform half is exercised
   # by running the verb against the live estate.
+  # THE ORACLE THAT WAS MISSING FROM THIS REPO ENTIRELY.
+  #
+  # verify loads the emitted Ruby and executes it, but against a RECORDING
+  # synthesizer that intercepts every datadog_* call. It therefore proves the
+  # file parses and runs, and never reaches the typed resource layer at all.
+  # conform proves the attributes match the provider schema. Neither one asks
+  # the question pangea-architectures actually asks: will the TYPED resource
+  # accept this body?
+  #
+  # That gap is not hypothetical. A defect of exactly this shape reached the
+  # workspace with every oracle here green -- logs and SLO bodies carrying
+  # terraform's block shape (a one-element list) where the typed resource
+  # declares a Hash. Nothing upstream could see it, because nothing upstream
+  # instantiated the type.
+  #
+  # This drives one body per emitted kind through the REAL resource module,
+  # the same way spec/resources/*_spec.rb do. It lives in the spec suite rather
+  # than in a verb because the typed layer needs dry-struct, which the bare CLI
+  # ruby does not carry.
+  describe 'emitted bodies against the real typed resource layer' do
+    around { |example| Dir.mktmpdir { |dir| @dir = dir; example.run } }
+
+    def typed_module(type)
+      Pangea::Resources.const_get(type.split('_').map(&:capitalize).join)
+    rescue NameError
+      nil
+    end
+
+    def populated_capture
+      cap = Absorb::Capture.new(File.join(@dir, 'estate'))
+      cap.prepare
+      cap.write(:monitors, '1', monitor_payload)
+      cap.write(:dashboards, 'abc-def-ghi', dashboard_payload)
+      cap.write(:slos, 's1', { 'id' => 's1', 'name' => 'SLO', 'type' => 'metric',
+                               'thresholds' => [{ 'timeframe' => '7d', 'target' => 99.0 }],
+                               'query' => { 'numerator' => 'sum:a{*}.as_count()',
+                                            'denominator' => 'sum:b{*}.as_count()' } })
+      cap.write(:downtimes, 'd1', { 'id' => 'd1', 'scope' => 'env:prod',
+                                    'message' => 'planned',
+                                    'schedule' => { 'start' => '2026-01-01T00:00:00Z' } })
+      cap.write(:logs_metrics, 'lm1',
+                { 'id' => 'lm1',
+                  'attributes' => { 'filter' => { 'query' => 'service:x' },
+                                    'compute' => { 'aggregation_type' => 'count' } } })
+      cap.write(:logs_indexes, 'main', { 'name' => 'main', 'filter' => { 'query' => '*' },
+                                         'num_retention_days' => 15 })
+      cap.write(:teams, 't1', { 'id' => 't1', 'attributes' => { 'name' => 'Team', 'handle' => 'team',
+                                                                'description' => 'd' } })
+      cap.write(:roles, 'r1', { 'id' => 'r1', 'type' => 'roles', 'attributes' => { 'name' => 'Role' },
+                                'relationships' => { 'permissions' => { 'data' => [{ 'id' => 'p1' }] } } })
+      cap.write_permissions([{ 'id' => 'p1', 'attributes' => { 'restricted' => false } }])
+      cap.write(:rum_applications, 'ra1',
+                { 'id' => 'ra1', 'attributes' => { 'name' => 'App', 'type' => 'browser' } })
+      cap.write(:apm_retention_filters, 'af1',
+                { 'id' => 'af1', 'attributes' => { 'name' => 'Ours', 'enabled' => true,
+                                                   'filter_type' => 'spans-sampling-processor',
+                                                   'rate' => 1, 'filter' => { 'query' => 'x' } } })
+      cap.write(:dashboard_lists, 'dl1', { 'id' => 'dl1', 'name' => 'List',
+                                           'dashboards' => [{ 'id' => 'abc-def-ghi',
+                                                              'type' => 'custom_timeboard' }] })
+      cap.write(:logs_pipelines, 'lp1', { 'id' => 'lp1', 'name' => 'Custom', 'is_enabled' => true,
+                                          'is_read_only' => false,
+                                          'filter' => { 'query' => 'service:x' }, 'processors' => [] })
+      cap.write(:logs_pipelines, 'lp2', { 'id' => 'lp2', 'name' => 'Integration', 'is_enabled' => true,
+                                          'is_read_only' => true, 'filter' => { 'query' => '' },
+                                          'processors' => [] })
+      cap
+    end
+
+    it 'every emitted body is accepted by its typed resource' do
+      cap = populated_capture
+      roundtrip = Absorb::Roundtrip.new(capture: cap, provider_dir: '/nonexistent', rules: rules)
+      exercised = []
+      rejected = []
+
+      Absorb::Roundtrip::KINDS.each do |kind, spec_for_kind|
+        type = spec_for_kind[:resource]
+        mod = typed_module(type)
+        next if mod.nil?
+
+        cap.ids(spec_for_kind[:capture]).each do |id|
+          body = begin
+            roundtrip.body_for(kind, cap.read(spec_for_kind[:capture], id), id)
+          rescue StandardError
+            nil
+          end
+          next if body.nil?
+
+          exercised << type
+          begin
+            synth = TerraformSynthesizer.new
+            synth.extend(mod)
+            synth.public_send(type, "probe_#{exercised.size}",
+                              body.reject { |k, _| k.to_s == 'lifecycle' })
+          rescue StandardError => e
+            rejected << "#{type} (#{id}): #{e.class}: #{e.message}"
+          end
+        end
+      end
+
+      expect(rejected).to be_empty
+      # A spec that silently stopped exercising kinds would pass while proving
+      # nothing, which is the failure this whole suite is shaped against.
+      expect(exercised.uniq.size).to be >= 12
+    end
+
+    # The check above is green, which says nothing about whether it can go red.
+    # This is the DEFECT IT EXISTS FOR, reproduced: terraform's block shape (a
+    # one-element list) where the typed resource declares a Hash. It reached
+    # pangea-architectures once with every oracle in this repo green, because
+    # nothing in this repo instantiated the type.
+    it 'rejects the one-element-list shape that reached the workspace' do
+      good = { 'name' => 'x', 'filter' => { 'query' => '*' }, 'retention_days' => 15,
+               'disable_daily_limit' => true }
+
+      accepted = lambda do |body|
+        synth = TerraformSynthesizer.new
+        synth.extend(Pangea::Resources::DatadogLogsIndex)
+        synth.datadog_logs_index('probe', body)
+        true
+      rescue StandardError
+        false
+      end
+
+      expect(accepted.call(good)).to be(true)
+      expect(accepted.call(good.merge('filter' => [{ 'query' => '*' }]))).to be(false)
+    end
+  end
+
   describe Absorb::Conform do
     # conform is GREEN on the real estate, which proves nothing about conform.
     # Every check below is driven by a schema built to make it fire, because a
