@@ -404,7 +404,12 @@ module Pangea
               when :thresholds
                 Array(value).map { |t| t.reject { |k, _| SLO_THRESHOLD_COMPUTED.include?(k) } }
               when :sli_specification
-                [slo_sli_specification(value)]
+                # Hash, not a one-element list. The typed
+                # `datadog_service_level_objective` declares it that way, and
+                # emitting the terraform BLOCK shape type-errors on the way into
+                # Pangea -- invisible to verify, whose recording synth never
+                # reaches the typed layer.
+                slo_sli_specification(value)
               else
                 value
               end
@@ -588,12 +593,18 @@ module Pangea
 
         # A logs metric's API `id` IS its name, and its real body hides under
         # `attributes`.
+        # `filter` and `compute` are HASHES, `group_by` is a LIST. That is not a
+        # style choice -- it mirrors the provider's own nesting, and the typed
+        # `datadog_logs_metric` resource declares exactly that. Emitting the
+        # terraform BLOCK shape (a list of one) here type-errors on the way into
+        # Pangea, which `verify` cannot see because its recording synth bypasses
+        # the typed layer entirely.
         def logs_metric(payload)
           attributes = payload['attributes'] || {}
           attrs = {
             name: payload['id'].to_s,
-            filter: [{ query: attributes.dig('filter', 'query').to_s }],
-            compute: [compact_symbolized(attributes['compute'], %w[aggregation_type include_percentiles path])]
+            filter: { query: attributes.dig('filter', 'query').to_s },
+            compute: compact_symbolized(attributes['compute'], %w[aggregation_type include_percentiles path])
           }
           group_by = Array(attributes['group_by'])
                      .map { |g| compact_symbolized(g, %w[path tag_name]) }
@@ -607,7 +618,7 @@ module Pangea
         def logs_index(payload)
           attrs = {
             name: payload['name'].to_s,
-            filter: [{ query: payload.dig('filter', 'query').to_s }],
+            filter: { query: payload.dig('filter', 'query').to_s },
             retention_days: payload['num_retention_days'],
             disable_daily_limit: payload['daily_limit'].nil?
           }
@@ -620,7 +631,7 @@ module Pangea
               payload['daily_limit_warning_threshold_percentage']
           end
           reset = payload['daily_limit_reset']
-          attrs[:daily_limit_reset] = [compact_symbolized(reset, %w[reset_time reset_utc_offset])] if reset
+          attrs[:daily_limit_reset] = compact_symbolized(reset, %w[reset_time reset_utc_offset]) if reset
           filters = Array(payload['exclusion_filters']).map { |f| logs_exclusion_filter(f) }
           attrs[:exclusion_filter] = filters unless filters.empty?
           canonicalize(attrs.compact)

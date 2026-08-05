@@ -706,8 +706,12 @@ RSpec.describe Absorb do
       )
 
       expect(body[:name]).to eq('test.access.http.ok')
-      expect(body[:filter]).to eq([{ query: 'ACCESS' }])
-      expect(body[:compute]).to eq([{ aggregation_type: 'count' }])
+      # HASH, not a one-element list: the typed datadog_logs_metric declares
+      # filter and compute as Hash and group_by as a list, mirroring the
+      # provider's own nesting. Emitting the terraform BLOCK shape type-errors
+      # on the way into Pangea.
+      expect(body[:filter]).to eq({ query: 'ACCESS' })
+      expect(body[:compute]).to eq({ aggregation_type: 'count' })
       expect(body).not_to have_key(:group_by)
     end
 
@@ -722,6 +726,28 @@ RSpec.describe Absorb do
       expect(body[:flex_retention_days]).to eq(0)
       expect(body[:disable_daily_limit]).to be(false)
       expect(body).not_to have_key(:num_retention_days)
+    end
+
+    # The defect this class of fix exists for: `verify` cannot see it. Its
+    # recording synth bypasses the typed resource layer entirely, so emitted
+    # code can be type-INVALID and still pass the oracle 340/340. It surfaced
+    # only when the emitted workspace was synthesized for real.
+    it 'emits shapes the typed resource layer actually accepts' do
+      metric = Absorb::Normalize.logs_metric(
+        { 'id' => 'm', 'attributes' => { 'filter' => { 'query' => 'q' },
+                                         'compute' => { 'aggregation_type' => 'count' },
+                                         'group_by' => [{ 'path' => 'p', 'tag_name' => 't' }] } }
+      )
+      index = Absorb::Normalize.logs_index(
+        { 'name' => 'all', 'filter' => { 'query' => '' }, 'num_retention_days' => 15,
+          'daily_limit_reset' => { 'reset_time' => '14:00' } }
+      )
+
+      expect(metric[:filter]).to be_a(Hash)
+      expect(metric[:compute]).to be_a(Hash)
+      expect(metric[:group_by]).to be_a(Array)
+      expect(index[:filter]).to be_a(Hash)
+      expect(index[:daily_limit_reset]).to be_a(Hash)
     end
 
     it 'reports the index state the provider declines to model' do

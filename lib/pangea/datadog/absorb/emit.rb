@@ -278,7 +278,8 @@ module Pangea
           arch    = rules.archetype_for(payload['title'])
           derived = derive_archetype_params(arch, payload)
 
-          write_template(File.join('dashboards_archetype', slug), [[slug, derived]]) do |name, params|
+          write_template(File.join('dashboards_archetype', slug), [[slug, derived]],
+                         requires: [engine_require(arch.engine)]) do |name, params|
             <<~RUBY
               Pangea::Datadog::Absorb::Engines::#{engine_const(arch.engine)}.build(
                 synth,
@@ -326,6 +327,15 @@ module Pangea
           counts.max_by { |_, n| n }&.first.to_s
         end
 
+        # Generated code that calls the engine must REQUIRE the engine. Without
+        # it the file only runs inside a process that already loaded absorb --
+        # the CLI does, a Pangea workspace does not, and neither does the
+        # operator's in-cluster compiler. It emitted fine and failed where it
+        # was actually deployed.
+        def engine_require(engine)
+          "pangea/datadog/absorb/engines/#{engine}"
+        end
+
         def engine_const(engine)
           ENGINES.fetch(engine) { raise "unknown archetype engine #{engine.inspect}" }
                  .name.split('::').last
@@ -336,7 +346,7 @@ module Pangea
         # Two group names that camelize to one module would have the second file
         # reopen the first and replace its build method, silently dropping every
         # resource in one of them. That happened once, so it is now an error.
-        def write_template(name, entries)
+        def write_template(name, entries, requires: [])
           module_name = camelize(File.basename(name))
           @modules ||= {}
           if (taken = @modules[module_name]) && taken != name
@@ -349,6 +359,7 @@ module Pangea
           FileUtils.mkdir_p(File.dirname(path))
           File.write(path, <<~RUBY)
             #{HEADER}
+            #{requires.map { |r| "require '#{r}'" }.join("\n")}#{"\n" unless requires.empty?}
             module Pangea
               module Absorbed
                 module #{module_name}
