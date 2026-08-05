@@ -932,6 +932,42 @@ RSpec.describe Absorb do
       expect(addresses.tally.select { |_, n| n > 1 }).to be_empty
     end
 
+    # The dependency that motivated the split. An archetype dashboard is emitted
+    # as a CALL to the absorb engine, so its file carries a `require` the plain
+    # ones do not. The operator's compiler bundles whatever pangea-datadog its
+    # flake pins, and a pin predating the engine cannot load that file -- so
+    # keeping the two together would hold up every plain dashboard to ship five
+    # archetype ones.
+    it 'keeps archetype dashboards in a shard of their own' do
+      cap = Absorb::Capture.new(File.join(@dir, 'arch'))
+      cap.prepare
+      cap.write(:dashboards, 'abc-def-ghi', dashboard_payload)
+      cap.write(:dashboards, 'arch-1', dashboard_payload.merge(
+                                         'id' => 'arch-1',
+                                         'title' => "DBK Production Unified DB's (Estimation)"
+                                       ))
+      archetyped = rules('archetypes' => [
+                           { 'name' => 'unified_dbs', 'engine' => 'timeseries_grid',
+                             'group_by' => 'database_id',
+                             'match' => { 'title' => "\\A(?<cluster>[\\w ]+) Unified DB's" },
+                             'widgets' => [
+                               { 'metric' => 'gcp.cloudsql.database.cpu.utilization',
+                                 'query' => 'cpu', 'legend' => 'vertical',
+                                 'layout' => { 'x' => 0, 'y' => 0, 'width' => 6, 'height' => 4 } }
+                             ] }
+                         ])
+      out = File.join(@dir, 'archout')
+      Absorb::Emit.new(capture: cap, out_dir: out, rules: archetyped).run
+
+      plain = JSON.parse(File.read(File.join(out, 'shards', 'dashboards.imports.json')))
+      arch  = JSON.parse(File.read(File.join(out, 'shards', 'dashboards_archetype.imports.json')))
+
+      expect(plain.keys).to all(satisfy { |a| !arch.key?(a) })
+      expect(arch.size).to eq(1)
+      expect(File.read(File.join(out, 'shards', 'dashboards.rb')))
+        .not_to include('absorb/engines')
+    end
+
     it 'gives each shard a template of its own name' do
       _imports, out = emit_all
 

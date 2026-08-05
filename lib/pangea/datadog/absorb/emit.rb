@@ -146,10 +146,14 @@ module Pangea
         }.freeze
 
         def shard_imports(imports, shards)
+          overrides = @address_shards || {}
           slices = shards.keys.to_h { |shard| [shard, {}] }
           imports.each do |address, id|
             type = address.split('.', 2).first
-            shard = ADDRESS_SHARDS[type]
+            # The type decides the shard except where emission recorded
+            # otherwise -- archetype dashboards share a resource type with plain
+            # ones but not a dependency footprint.
+            shard = overrides[address] || ADDRESS_SHARDS[type]
             raise "no shard declared for #{type}" if shard.nil?
             raise "shard #{shard} has no emitted files" unless slices.key?(shard)
 
@@ -339,8 +343,17 @@ module Pangea
             tier = Classify.dashboard_tier(payload, id: id, rules: rules, twins: twins)
             next if tier == Classify::TIER_RETIRE
 
-            entries << [resource_slug(payload['title'], id), payload, tier, id]
-            imports["datadog_dashboard_json.#{resource_slug(payload['title'], id)}"] = id
+            slug = resource_slug(payload['title'], id)
+            entries << [slug, payload, tier, id]
+            address = "datadog_dashboard_json.#{slug}"
+            imports[address] = id
+            # An archetype dashboard is emitted as a CALL to the absorb engine,
+            # so its file carries a `require` the plain ones do not. Kept in its
+            # own shard: an operator whose pangea-datadog predates the engine can
+            # still deploy the other 97 rather than being held up by 5.
+            if tier == Classify::TIER_ARCHETYPE
+              (@address_shards ||= {})[address] = 'dashboards_archetype'
+            end
           end
 
           # One file per dashboard. A single file holding all of them reached
@@ -367,7 +380,8 @@ module Pangea
           derived = derive_archetype_params(arch, payload)
 
           write_template(File.join('dashboards_archetype', slug), [[slug, derived]],
-                         requires: [engine_require(arch.engine)], shard: 'dashboards') do |name, params|
+                         requires: [engine_require(arch.engine)],
+                         shard: 'dashboards_archetype') do |name, params|
             <<~RUBY
               Pangea::Datadog::Absorb::Engines::#{engine_const(arch.engine)}.build(
                 synth,
