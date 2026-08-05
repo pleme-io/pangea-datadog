@@ -79,13 +79,14 @@ module Pangea
       # plan clean from the API payload alone. OPT-IN: nothing calls this unless
       # the operator asks, and the default emit path is unchanged.
       def reconcile(root:, provider_dir:, config_path: nil, terraform: 'terraform',
-                    only_failing: true)
+                    only_failing: true, kinds: nil)
         cfg   = config_path ? Config.load(config_path) : nil
         creds = credentials_for(cfg)
         rt = Roundtrip.new(capture: Capture.new(root), provider_dir: provider_dir,
                            terraform: terraform, site: cfg&.site || Client::DEFAULT_SITE,
                            rules: cfg ? Rules.from(cfg) : Rules.none)
-        rt.reconcile(credentials: creds, only_failing: only_failing)
+        rt.reconcile(credentials: creds, only_failing: only_failing,
+                     kinds: kinds || [:dashboards])
       end
 
       def verify(root:, out_dir:)

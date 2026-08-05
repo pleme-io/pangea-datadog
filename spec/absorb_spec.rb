@@ -746,6 +746,81 @@ RSpec.describe Absorb do
     end
   end
 
+  # Powerpacks. `datadog_powerpack` models widgets as 31 typed sub-blocks --
+  # the shape that made the typed `datadog_dashboard` unusable -- and unlike
+  # dashboards there is no `_json` escape hatch. So no projection of the API
+  # payload works, and the ONLY viable body is the provider's own post-import
+  # state, recorded by reconcile.
+  describe 'powerpacks' do
+    let(:payload) { { 'id' => 'pp1', 'attributes' => { 'name' => 'Network' } } }
+
+    def capture_with_pack(sidecar: nil)
+      cap = Absorb::Capture.new(File.join(@dir, 'estate'))
+      cap.prepare
+      cap.write(:powerpacks, 'pp1', payload)
+      cap.write_normalized(:powerpacks, 'pp1', sidecar) if sidecar
+      cap
+    end
+
+    around { |example| Dir.mktmpdir { |dir| @dir = dir; example.run } }
+
+    it 'has no body at all until one is recorded' do
+      expect(Absorb::Normalize.powerpack(payload, nil)).to be_nil
+    end
+
+    it 'builds the body from the recorded state' do
+      body = Absorb::Normalize.powerpack(payload, { 'name' => 'Network', 'tags' => ['tag:akeyless'] })
+
+      expect(body).to eq({ name: 'Network', tags: ['tag:akeyless'] })
+    end
+
+    # Emitting a half-formed powerpack would produce code terraform rejects.
+    it 'skips an unreconciled powerpack rather than emitting one' do
+      imports = Absorb::Emit.new(capture: capture_with_pack, out_dir: File.join(@dir, 'g'),
+                                 rules: rules).run
+
+      expect(imports).to be_empty
+    end
+
+    it 'emits a reconciled powerpack' do
+      cap = capture_with_pack(sidecar: { 'name' => 'Network' })
+      imports = Absorb::Emit.new(capture: cap, out_dir: File.join(@dir, 'g'), rules: rules).run
+
+      expect(imports).to eq({ 'datadog_powerpack.network_pp1' => 'pp1' })
+      expect(Absorb::Verify.new(capture: cap, out_dir: File.join(@dir, 'g')).run).to be_ok
+    end
+
+    # The provider's own post-import state carries values its own schema
+    # rejects. Measured: with this prune 9 of 9 of the estate's powerpacks plan
+    # to "No changes"; without it, 0 of 9.
+    describe 'pruning the provider state' do
+      def prune(v) = Absorb::Normalize.prune_provider_state(v)
+
+      it 'drops an empty string, which is not a valid enum value' do
+        expect(prune({ 'live_span' => '', 'name' => 'x' })).to eq({ 'name' => 'x' })
+      end
+
+      it 'drops a computed id at any depth' do
+        expect(prune({ 'widget' => [{ 'id' => 9, 'q' => 'a' }] })).to eq({ 'widget' => [{ 'q' => 'a' }] })
+      end
+
+      it 'drops nulls and empty lists, which are absence' do
+        expect(prune({ 'a' => nil, 'b' => [], 'c' => 1 })).to eq({ 'c' => 1 })
+      end
+
+      # This single distinction is the difference between 8/9 and 9/9: an empty
+      # HASH is a declared block carrying no set fields (toplist_definition
+      # .style), and dropping it is itself a diff.
+      it 'KEEPS an empty block, which is declared rather than absent' do
+        expect(prune({ 'style' => {}, 'n' => 1 })).to eq({ 'style' => {}, 'n' => 1 })
+      end
+
+      it 'keeps an empty block that only became empty after pruning' do
+        expect(prune({ 'style' => { 'palette' => '' } })).to eq({ 'style' => {} })
+      end
+    end
+  end
+
   # The account layer: teams, roles, RUM applications, APM retention filters
   # and dashboard lists.
   describe 'the account layer' do

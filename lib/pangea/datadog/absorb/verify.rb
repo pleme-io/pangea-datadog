@@ -149,6 +149,8 @@ module Pangea
               when 'datadog_rum_application' then Normalize.rum_application(payload)
               when 'datadog_apm_retention_filter' then Normalize.apm_retention_filter(payload)
               when 'datadog_dashboard_list' then Normalize.dashboard_list(payload)
+              when 'datadog_powerpack'
+                Normalize.powerpack(payload, capture.normalized(:powerpacks, id))
               else Normalize.dashboard(payload)
               end
 
@@ -217,7 +219,8 @@ module Pangea
           'datadog_role' => :roles,
           'datadog_rum_application' => :rum_applications,
           'datadog_apm_retention_filter' => :apm_retention_filters,
-          'datadog_dashboard_list' => :dashboard_lists
+          'datadog_dashboard_list' => :dashboard_lists,
+          'datadog_powerpack' => :powerpacks
         }.freeze
 
         def load_payload(kind, id)
@@ -246,6 +249,10 @@ module Pangea
                'datadog_logs_metric', 'datadog_logs_index'
             u = Normalize.logs_unmapped(kind, payload)
             [u[:fields], u[:unmanageable]]
+          when 'datadog_powerpack'
+            # The body IS the provider's own read, so nothing can be silently
+            # lost between the two -- the same argument as datadog_dashboard_json.
+            [[], []]
           when 'datadog_team', 'datadog_role', 'datadog_rum_application',
                'datadog_apm_retention_filter', 'datadog_dashboard_list'
             u = Normalize.account_unmapped(kind, payload)

@@ -57,7 +57,26 @@ module Pangea
           rum_applications: { resource: 'datadog_rum_application', capture: :rum_applications },
           apm_retention_filters: { resource: 'datadog_apm_retention_filter',
                                    capture: :apm_retention_filters },
-          dashboard_lists: { resource: 'datadog_dashboard_list', capture: :dashboard_lists }
+          dashboard_lists: { resource: 'datadog_dashboard_list', capture: :dashboard_lists },
+          powerpacks: { resource: 'datadog_powerpack', capture: :powerpacks }
+        }.freeze
+
+        # How to turn a kind's post-import state into a reusable body, and the
+        # minimal config `import` needs to run at all. Dashboards hide their
+        # whole body in one JSON string; a powerpack's is the pruned state.
+        RECONCILABLE = {
+          dashboards: {
+            seed: -> { { 'dashboard' => '{}' } },
+            extract: ->(attrs) { attrs['dashboard'].nil? ? nil : JSON.parse(attrs['dashboard']) }
+          },
+          powerpacks: {
+            seed: -> { { 'name' => 'probe' } },
+            extract: ->(attrs) { Normalize.prune_provider_state(attrs) },
+            # A powerpack has no body at all until one is recorded, so the
+            # "is it already clean?" pre-check cannot run on the first pass --
+            # it would need the very thing this is about to produce.
+            sidecar_only: true
+          }
         }.freeze
 
         Outcome = Struct.new(:kind, :id, :name, :status, :detail, keyword_init: true) do
@@ -144,27 +163,35 @@ module Pangea
         # Only touches dashboards, and only the ones that need it, so the
         # capture keeps the raw API payload as the source of truth everywhere a
         # transformation of it is sufficient.
-        def reconcile(credentials:, only_failing: true)
-          spec  = KINDS[:dashboards]
+        def reconcile(credentials:, only_failing: true, kinds: [:dashboards])
+          kinds.flat_map { |kind| reconcile_kind(kind, credentials, only_failing) }
+        end
+
+        def reconcile_kind(kind, credentials, only_failing)
+          spec = KINDS.fetch(kind) { raise Error, "unknown kind #{kind}" }
+          recipe = RECONCILABLE.fetch(kind) { raise Error, "#{kind} has no reconcile recipe" }
           twins = rules.dedupe_identical? ? Classify.twin_index(capture) : {}
 
-          adoptable(:dashboards, spec).map do |id|
+          adoptable(kind, spec).map do |id|
             # An archetype-tier dashboard is emitted by an engine, not from a
             # body, so a recorded body would sit unread. Say so rather than
             # write a file nothing consumes.
-            payload = capture.read(:dashboards, id)
-            tier = Classify.dashboard_tier(payload, id: id, rules: rules, twins: twins)
-            next { id: id, status: :archetype } if tier == Classify::TIER_ARCHETYPE
-
-            if only_failing && plan_one(:dashboards, spec, id, credentials).clean?
-              next { id: id, status: :already_clean }
+            if kind == :dashboards
+              tier = Classify.dashboard_tier(capture.read(:dashboards, id),
+                                             id: id, rules: rules, twins: twins)
+              next { kind: kind, id: id, status: :archetype } if tier == Classify::TIER_ARCHETYPE
             end
 
-            body = provider_body(spec[:resource], id, credentials)
-            next { id: id, status: :unavailable } if body.nil?
+            skip_precheck = recipe[:sidecar_only] && !capture.normalized?(spec[:capture], id)
+            if only_failing && !skip_precheck && plan_one(kind, spec, id, credentials).clean?
+              next { kind: kind, id: id, status: :already_clean }
+            end
 
-            capture.write_normalized(:dashboards, id, body)
-            { id: id, status: :recorded }
+            body = provider_body(spec[:resource], id, credentials, recipe)
+            next { kind: kind, id: id, status: :unavailable } if body.nil?
+
+            capture.write_normalized(spec[:capture], id, body)
+            { kind: kind, id: id, status: :recorded }
           end.compact
         end
 
@@ -172,9 +199,9 @@ module Pangea
         # itself stored. That body is authoritative by construction: `prepResource`
         # is deterministic and runs on both sides, so a config that IS the
         # provider's read necessarily plans clean.
-        def provider_body(resource, id, credentials)
-          Dir.mktmpdir("absorb-reconcile-") do |dir|
-            write_workspace(dir, resource, { 'dashboard' => '{}' })
+        def provider_body(resource, id, credentials, recipe)
+          Dir.mktmpdir('absorb-reconcile-') do |dir|
+            write_workspace(dir, resource, recipe[:seed].call)
             env = terraform_env(dir, credentials)
             run_tf(dir, env, 'init', '-no-color', '-input=false')
             imported = run_tf(dir, env, 'import', '-no-color', '-input=false',
@@ -182,8 +209,8 @@ module Pangea
             return nil unless imported[:ok]
 
             state = JSON.parse(File.read(File.join(dir, 'terraform.tfstate')))
-            raw = state.dig('resources', 0, 'instances', 0, 'attributes', 'dashboard')
-            raw.nil? ? nil : JSON.parse(raw)
+            attrs = state.dig('resources', 0, 'instances', 0, 'attributes')
+            attrs.nil? ? nil : recipe[:extract].call(attrs)
           end
         rescue StandardError
           nil
@@ -227,6 +254,11 @@ module Pangea
           when :rum_applications then stringify(Normalize.rum_application(payload))
           when :apm_retention_filters then stringify(Normalize.apm_retention_filter(payload))
           when :dashboard_lists then stringify(Normalize.dashboard_list(payload))
+          when :powerpacks
+            body = Normalize.powerpack(payload, capture.normalized(:powerpacks, id))
+            raise Error, "powerpack #{id} has no reconciled body; run reconcile first" if body.nil?
+
+            stringify(body)
           else raise Error, "no terraform body for #{kind}"
           end
         end

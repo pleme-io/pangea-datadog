@@ -89,6 +89,7 @@ module Pangea
           imports.merge!(emit_simple(:dashboard_lists, :datadog_dashboard_list, 'dashboard_lists') do |p|
             Normalize.dashboard_list(p)
           end)
+          imports.merge!(emit_powerpacks)
           File.write(File.join(out_dir, 'imports.json'), "#{JSON.pretty_generate(imports)}\n")
           imports
         end
@@ -132,6 +133,30 @@ module Pangea
             end
           end
 
+          imports
+        end
+
+        # A powerpack has NO emittable body until `reconcile` has recorded the
+        # provider's own post-import state -- there is no projection of the API
+        # payload that `datadog_powerpack` accepts. Unreconciled ones are
+        # skipped rather than emitted half-formed.
+        def emit_powerpacks
+          imports = {}
+          entries = []
+
+          capture.each(:powerpacks) do |id, payload|
+            body = Normalize.powerpack(payload, capture.normalized(:powerpacks, id))
+            next if body.nil?
+
+            slug = resource_slug(payload.dig('attributes', 'name'), id)
+            entries << [slug, body]
+            imports["datadog_powerpack.#{slug}"] = id
+          end
+          return imports if entries.empty?
+
+          write_template('powerpacks', entries.sort_by(&:first)) do |slug, attrs|
+            render_resource(:datadog_powerpack, slug, attrs)
+          end
           imports
         end
 

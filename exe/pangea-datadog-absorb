@@ -33,8 +33,9 @@ parser = OptionParser.new do |o|
       classify   report provenance and tier over a capture
       emit       generate typed Pangea Ruby from a capture
       verify     prove the generated code state-matches the capture
-      reconcile  record the provider's own normalized body for dashboards that
-                 cannot plan clean from the API payload alone (OPT-IN, read-only)
+      reconcile  record the provider's own post-import body for objects that
+                 cannot plan clean from the API payload alone -- dashboards by
+                 default, --kinds powerpacks for powerpacks (OPT-IN, read-only)
       roundtrip  prove terraform plans to "No changes" against the LIVE objects
                  (read-only: import + plan are GET; never applies)
 
@@ -133,7 +134,7 @@ when 'reconcile'
   end
   begin
     results = Absorb.reconcile(root: options[:root], provider_dir: options[:provider_dir],
-                               config_path: options[:config])
+                               config_path: options[:config], kinds: options[:kinds])
     tally = results.group_by { |r| r[:status] }.transform_values(&:size)
     tally.sort.each { |status, n| puts format('  %-14s %d', status, n) }
     # An :unavailable dashboard is one whose body could not be read at all, so

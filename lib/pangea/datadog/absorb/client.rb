@@ -140,6 +140,10 @@ module Pangea
         # dashboards/traces/apps are grouped how. None of it credential-bearing
         # -- the RUM list response carries `api_key_id` (a reference) but no
         # `client_token`, which was screened before this was added.
+        def powerpacks
+          get_json('/api/v2/powerpacks').fetch('data', [])
+        end
+
         def teams
           get_json('/api/v2/team').fetch('data', [])
         end

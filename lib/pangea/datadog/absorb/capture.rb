@@ -24,7 +24,7 @@ module Pangea
         DEFAULT_KINDS = %i[monitors dashboards slos downtimes
                            logs_pipelines logs_metrics logs_indexes
                            teams roles rum_applications apm_retention_filters
-                           dashboard_lists].freeze
+                           dashboard_lists powerpacks].freeze
 
         # kind => the reader on Client and the field its id lives in. These
         # kinds need none of the per-object follow-up fetches monitors and
@@ -34,7 +34,8 @@ module Pangea
           roles: [:roles, 'id'],
           rum_applications: [:rum_applications, 'id'],
           apm_retention_filters: [:apm_retention_filters, 'id'],
-          dashboard_lists: [:dashboard_lists, 'id']
+          dashboard_lists: [:dashboard_lists, 'id'],
+          powerpacks: [:powerpacks, 'id']
         }.freeze
 
         def self.run(client:, root:, kinds: DEFAULT_KINDS, progress: nil)

@@ -633,6 +633,57 @@ module Pangea
                        sample_rate: payload.dig('filter', 'sample_rate') }.compact] }
         end
 
+        # ── powerpacks ───────────────────────────────────────────────────
+        #
+        # `datadog_powerpack` models widgets as 31 typed sub-blocks -- the shape
+        # that made the typed `datadog_dashboard` unusable -- and unlike
+        # dashboards there is no `_json` escape hatch to fall back to. So there
+        # is NO viable projection of the API payload: the only body that works
+        # is the provider's own post-import state, recorded by `reconcile`.
+        #
+        # Measured: with the prune below, 9 of 9 of this estate's powerpacks
+        # plan to "No changes"; without it, 0 of 9 -- the provider's own state
+        # carries values its own schema rejects.
+        def powerpack(_payload, normalized)
+          return nil if normalized.nil?
+
+          canonicalize(symbolize_deep(normalized))
+        end
+
+        # The provider's post-import state is not directly re-usable as config.
+        # Three things in it are rejected by the provider's own schema:
+        #
+        #   ''         not a valid WidgetLiveSpan or legend_size enum value
+        #   widget.id  computed, "can't configure a value for"
+        #   []/nil     absence, not a declared empty
+        #
+        # But an empty HASH is a declared block carrying no set fields
+        # (toplist_definition.style), and dropping it is itself a diff -- that
+        # distinction alone is the difference between 8/9 and 9/9.
+        def prune_provider_state(value)
+          case value
+          when Hash
+            value.each_with_object({}) do |(k, v), h|
+              next if k.to_s == 'id'
+
+              pruned = prune_provider_state(v)
+              next if pruned.nil? || (pruned.respond_to?(:empty?) && pruned.empty? && !pruned.is_a?(Hash))
+
+              h[k] = pruned
+            end
+          when Array then value.map { |v| prune_provider_state(v) }.compact
+          else value
+          end
+        end
+
+        def symbolize_deep(value)
+          case value
+          when Hash then value.to_h { |k, v| [k.to_sym, symbolize_deep(v)] }
+          when Array then value.map { |v| symbolize_deep(v) }
+          else value
+          end
+        end
+
         # ── the account layer ────────────────────────────────────────────
 
         def team(payload)
