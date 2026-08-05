@@ -1445,6 +1445,39 @@ RSpec.describe Absorb do
     # The GENERAL form of the same hole, and the reason the check is not a list
     # of known kinds: someone captures a new kind and never teaches emit about
     # it. A hardcoded check would stay green forever.
+    # The bug the FIRST version of this check could not catch: it walked the
+    # table of known kinds, so a kind nobody had thought of was skipped in
+    # silence -- which is the exact bug it was written to catch.
+    it 'fails on a captured kind that is in neither table' do
+      cap = Absorb::Capture.new(File.join(@dir, 'estate'))
+      cap.prepare
+      cap.write(:monitors, '123', monitor_payload)
+      FileUtils.mkdir_p(File.join(@dir, 'estate', 'synthetics'))
+      File.write(File.join(@dir, 'estate', 'synthetics', 'abc.json'), JSON.generate({ 'id' => 'abc' }))
+      out = File.join(@dir, 'g')
+      Absorb::Emit.new(capture: cap, out_dir: out, rules: rules).run
+
+      result = Absorb::Verify.new(capture: cap, out_dir: out).run
+
+      expect(result).not_to be_ok
+      expect(result.uncovered.map { |u| u[:kind] }).to include(:synthetics)
+      expect(result.uncovered.find { |u| u[:kind] == :synthetics }[:reason]).to include('classify it')
+    end
+
+    # A normalized body sits beside its kind as `<kind>_normalized`. Reading it
+    # as a kind of its own would report a permanent, unfixable gap.
+    it 'does not mistake a normalized sidecar directory for a kind' do
+      cap = Absorb::Capture.new(File.join(@dir, 'estate'))
+      cap.prepare
+      cap.write(:monitors, '123', monitor_payload)
+      FileUtils.mkdir_p(File.join(@dir, 'estate', 'dashboards_normalized'))
+      File.write(File.join(@dir, 'estate', 'dashboards_normalized', 'x.json'), JSON.generate({}))
+      out = File.join(@dir, 'g')
+      Absorb::Emit.new(capture: cap, out_dir: out, rules: rules).run
+
+      expect(Absorb::Verify.new(capture: cap, out_dir: out).run).to be_ok
+    end
+
     it 'fails when a whole captured kind contributes nothing' do
       cap = Absorb::Capture.new(File.join(@dir, 'estate'))
       cap.prepare

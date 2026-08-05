@@ -263,12 +263,6 @@ module Pangea
         # terraform-owned monitor -- those are correct exclusions and must stay
         # silent, or the gate cries wolf about decisions it was told to make.
         # Which of a kind's captured objects emit SHOULD have declared.
-        #
-        # Only kinds whose emission is config-independent appear here. Monitors
-        # and dashboards are excluded deliberately: what they emit depends on
-        # provenance rules and retire tiers that live in the config, and verify
-        # holds no config -- guessing their expected set would fail the real
-        # estate on every deliberate exclusion.
         EXPECTED_EMISSION = {
           slos: ->(_payload) { true },
           downtimes: ->(_payload) { true },
@@ -283,16 +277,47 @@ module Pangea
           powerpacks: ->(_payload) { true }
         }.freeze
 
-        # Objects the capture holds that emit should have declared and did not.
+        # Kinds emit declares nothing complete for ON PURPOSE, each with the
+        # reason stated. Being listed here is a CLASSIFICATION, not a pass: it
+        # records that someone decided, so that the decision can be re-read.
+        NOT_EMITTED = {
+          monitors: 'what emit declares depends on provenance rules in the config, ' \
+                    'and verify holds no config',
+          dashboards: 'what emit declares depends on retire tiers in the config, ' \
+                      'and verify holds no config'
+        }.freeze
+
+        # Normalized bodies live beside their kind, not as one.
+        SIDECAR_SUFFIX = '_normalized'
+
+        # Enumerated from DISK, not from a list of known kinds, and that is the
+        # whole point.
         #
-        # ONE mechanism, not two. An earlier version reported per-object gaps
-        # and whole-silent-kinds separately, which double-counted a kind that
-        # was both, and flagged `roles` as silent when every captured role was
-        # correctly excluded for being Datadog-managed.
+        # The first version of this check walked EXPECTED_EMISSION instead. It
+        # therefore proved exactly nothing about the bug it was written for --
+        # capture a kind, forget to emit it -- because a kind nobody had thought
+        # of was also a kind nobody had put in the table, so it was skipped in
+        # silence. A guard keyed on what you remembered cannot catch what you
+        # forgot. Walking the capture means a new directory is uncovered until
+        # someone classifies it either way.
+        def captured_kinds
+          Dir.children(capture.root)
+             .select { |entry| File.directory?(File.join(capture.root, entry)) }
+             .reject { |entry| entry.end_with?(SIDECAR_SUFFIX) }
+             .map(&:to_sym).sort
+        end
+
+        # Objects the capture holds that emit should have declared and did not.
         def uncovered_objects(imports)
           declared = imports.values.map(&:to_s).to_set
 
-          EXPECTED_EMISSION.flat_map do |kind, should_emit|
+          captured_kinds.flat_map do |kind|
+            next [] if capture.ids(kind).empty?
+
+            should_emit = EXPECTED_EMISSION[kind]
+            next unclassified(kind) if should_emit.nil? && !NOT_EMITTED.key?(kind)
+            next [] if should_emit.nil?
+
             missing = capture.ids(kind).reject { |id| declared.include?(id.to_s) }
                              .select { |id| should_emit.call(capture.read(kind, id)) }
             next [] if missing.empty?
@@ -301,6 +326,12 @@ module Pangea
           end
         rescue Errno::ENOENT
           []
+        end
+
+        def unclassified(kind)
+          [{ kind: kind, id: '*',
+             reason: "#{capture.ids(kind).size} captured but this kind is in neither " \
+                     'EXPECTED_EMISSION nor NOT_EMITTED -- classify it' }]
         end
 
         def reason_for(kind, count)
