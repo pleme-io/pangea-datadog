@@ -1,0 +1,152 @@
+# frozen_string_literal: true
+
+require 'json'
+require 'date'
+
+module Pangea
+  module Datadog
+    module Absorb
+      # A correctness audit of the captured estate, as a side effect of having
+      # absorbed it.
+      #
+      # This exists because adoption already found these defects by accident.
+      # Terraform refused to plan three monitors, the refusal traced to Datadog's
+      # own validator, and the validator named the reason. A query that cannot
+      # validate cannot evaluate -- so the same check, run over the whole
+      # capture, finds every instance rather than the ones that happened to
+      # block a plan.
+      #
+      # READ-ONLY AND OFFLINE. Everything here is computed from a capture already
+      # on disk. No API call, no credentials, nothing to approve.
+      #
+      # THE DISTINCTION THIS TURNS ON, and getting it wrong makes the audit
+      # useless: a BROKEN monitor and a SILENT one are not the same thing.
+      #
+      #   broken  its query cannot resolve, so it can never evaluate. A defect.
+      #   silent  it is in No Data. For anything ephemeral that is the HEALTHY
+      #           state -- "Pod Crashloop" in No Data means nothing is
+      #           crashlooping. Not a defect.
+      #
+      # Only the first fails the gate. An audit that cried wolf on every healthy
+      # ephemeral monitor would be ignored within a week, and then the real
+      # defects would be ignored with it.
+      module Audit
+        # An SLO alert names its SLO by id and a timeframe, and Datadog rejects
+        # the query outright when that SLO carries no threshold for it.
+        #
+        # The id is matched as "anything but a quote", not as hex. Real ids are
+        # 32-char hex today, and pinning that would mean any other id format
+        # silently stops being checked -- an audit that goes quiet is worse than
+        # one that never existed.
+        SLO_ALERT = /error_budget\("([^"]+)"\)\.over\("([^"]+)"\)/
+
+        Finding = Struct.new(:id, :name, :detail, keyword_init: true)
+
+        Result = Struct.new(:broken, :silent, :clusters, :monitors, keyword_init: true) do
+          def ok? = broken.empty?
+
+          def findings
+            {
+              'monitors' => monitors,
+              'broken' => broken.size,
+              'silent' => silent.size,
+              'brokenMonitors' => broken.map { |f| { 'id' => f.id, 'detail' => f.detail } },
+              'silentClusters' => clusters.map { |date, names| { 'since' => date, 'count' => names.size } }
+            }
+          end
+
+          def to_s
+            lines = ["audited #{monitors} monitors, broken #{broken.size}, silent #{silent.size}"]
+            broken.each { |f| lines << "  BROKEN #{f.id} #{f.name} -- #{f.detail}" }
+            clusters.each do |date, names|
+              lines << "  SILENT since #{date}: #{names.size} monitors went No Data together"
+            end
+            lines << '  (silent is NOT a defect: No Data is healthy for an ephemeral target)' unless silent.empty?
+            lines.join("\n")
+          end
+        end
+
+        module_function
+
+        def run(capture, today: Date.today)
+          slos = slo_timeframes(capture)
+          broken = []
+          silent = []
+          monitors = 0
+
+          capture.each(:monitors) do |_id, payload|
+            monitors += 1
+            defect = slo_timeframe_defect(payload, slos)
+            broken << defect if defect
+            entry = silence(payload, today)
+            silent << entry if entry
+          end
+
+          Result.new(broken: broken.sort_by(&:id), silent: silent.sort_by { |s| s[:since].to_s },
+                     clusters: cluster(silent), monitors: monitors)
+        end
+
+        # No rescue. An unreadable SLO capture means this audit cannot answer,
+        # and swallowing that would silently downgrade every SLO-alert check to
+        # "looks fine" -- the exact failure mode the audit exists to catch.
+        def slo_timeframes(capture)
+          timeframes = {}
+          capture.each(:slos) do |_id, payload|
+            timeframes[payload['id']] = Array(payload['thresholds']).filter_map { |t| t['timeframe'] }
+          end
+          timeframes
+        end
+
+        def slo_timeframe_defect(payload, slos)
+          match = SLO_ALERT.match(payload['query'].to_s)
+          return nil if match.nil?
+
+          slo_id, asked = match[1], match[2]
+          have = slos[slo_id]
+          return nil if have.nil? || have.include?(asked)
+
+          Finding.new(
+            id: payload['id'].to_s, name: payload['name'].to_s,
+            detail: "asks for #{asked} but SLO #{slo_id} has #{have.empty? ? 'no timeframes' : have.join(', ')}"
+          )
+        end
+
+        # Recorded, never counted against the gate. `notify_no_data: false` is
+        # what makes a silence unannounced -- the monitor will not tell anyone it
+        # has stopped watching -- and notification targets are what make anyone
+        # believe it is still watching.
+        def silence(payload, today)
+          return nil unless payload['overall_state'] == 'No Data'
+
+          targets = notification_targets(payload)
+          return nil if targets.empty?
+
+          since = payload['overall_state_modified'].to_s[0, 10]
+          { id: payload['id'].to_s, name: payload['name'].to_s, since: since,
+            days: days_since(since, today), targets: targets.size,
+            announces: payload.dig('options', 'notify_no_data') == true }
+        end
+
+        def notification_targets(payload)
+          payload['message'].to_s.split.select { |word| word.start_with?('@') }.uniq
+        end
+
+        def days_since(since, today)
+          (today - Date.parse(since)).to_i
+        rescue StandardError
+          nil
+        end
+
+        # A cluster is the signal. Five monitors going No Data on one day is an
+        # infrastructure event -- a decommission, or a metric source that moved
+        # -- not five independent coincidences. A singleton rarely is.
+        def cluster(silent)
+          silent.group_by { |s| s[:since] }
+                .select { |_, entries| entries.size > 1 }
+                .transform_values { |entries| entries.map { |e| e[:name] }.sort }
+                .sort.to_h
+        end
+      end
+    end
+  end
+end

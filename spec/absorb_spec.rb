@@ -1064,6 +1064,112 @@ RSpec.describe Absorb do
     end
   end
 
+  # Adoption turned out to be a correctness audit as a side effect: terraform
+  # refused to plan three monitors, the refusal traced to Datadog's own
+  # validator, and the validator named the reason. This runs the same check over
+  # the whole capture instead of the ones that happened to block a plan.
+  describe Absorb::Audit do
+    around { |example| Dir.mktmpdir { |dir| @dir = dir; example.run } }
+
+    def capture_with(monitors: {}, slos: {})
+      cap = Absorb::Capture.new(File.join(@dir, 'estate'))
+      cap.prepare
+      slos.each { |id, payload| cap.write(:slos, id, payload) }
+      monitors.each { |id, payload| cap.write(:monitors, id, payload) }
+      cap
+    end
+
+    def slo(id, *timeframes)
+      { 'id' => id, 'name' => 'S', 'thresholds' => timeframes.map { |t| { 'timeframe' => t } } }
+    end
+
+    def slo_alert(id, slo_id, timeframe)
+      { 'id' => id, 'name' => "alert #{id}", 'type' => 'slo alert',
+        'query' => %(error_budget("#{slo_id}").over("#{timeframe}") > 80) }
+    end
+
+    it 'reports an SLO alert asking for a timeframe its SLO does not have' do
+      cap = capture_with(slos: { 's' => slo('s', '7d') },
+                         monitors: { '1' => slo_alert(1, 's', '30d') })
+      result = described_class.run(cap)
+
+      expect(result).not_to be_ok
+      expect(result.broken.map(&:id)).to eq(['1'])
+      expect(result.broken.first.detail).to include('asks for 30d').and include('has 7d')
+    end
+
+    it 'passes an SLO alert whose timeframe the SLO carries' do
+      cap = capture_with(slos: { 's' => slo('s', '7d', '30d') },
+                         monitors: { '1' => slo_alert(1, 's', '30d') })
+
+      expect(described_class.run(cap)).to be_ok
+    end
+
+    # Absence of evidence is not evidence of a defect: an SLO outside the
+    # capture cannot be checked, and guessing would produce false alarms.
+    it 'says nothing about an SLO it has not captured' do
+      cap = capture_with(monitors: { '1' => slo_alert(1, 'missing', '30d') })
+
+      expect(described_class.run(cap)).to be_ok
+    end
+
+    # THE distinction. Getting this wrong makes the audit cry wolf on every
+    # healthy ephemeral monitor, and then the real defects get ignored with it.
+    it 'does NOT fail the gate on a monitor that is merely silent' do
+      cap = capture_with(monitors: { '1' => {
+                           'id' => 1, 'name' => 'Pod Crashloop', 'query' => 'x',
+                           'overall_state' => 'No Data', 'message' => 'ping @slack-team',
+                           'overall_state_modified' => '2024-01-12T00:00:00+00:00'
+                         } })
+      result = described_class.run(cap)
+
+      expect(result).to be_ok
+      expect(result.silent.size).to eq(1)
+    end
+
+    # A silence nobody is told about is the one worth surfacing; a monitor with
+    # no audience is not misleading anyone.
+    it 'ignores a silent monitor that notifies nobody' do
+      cap = capture_with(monitors: { '1' => {
+                           'id' => 1, 'name' => 'unwatched', 'overall_state' => 'No Data',
+                           'message' => 'no targets here',
+                           'overall_state_modified' => '2024-01-12T00:00:00+00:00'
+                         } })
+
+      expect(described_class.run(cap).silent).to be_empty
+    end
+
+    # A cluster is the signal: five monitors going No Data on one day is an
+    # infrastructure event, not five coincidences.
+    it 'clusters silences that began on the same day, and ignores singletons' do
+      monitors = {}
+      3.times do |i|
+        monitors[i.to_s] = { 'id' => i, 'name' => "azr #{i}", 'overall_state' => 'No Data',
+                             'message' => '@slack-x',
+                             'overall_state_modified' => '2024-01-12T00:00:00+00:00' }
+      end
+      monitors['9'] = { 'id' => 9, 'name' => 'lone', 'overall_state' => 'No Data',
+                        'message' => '@slack-x',
+                        'overall_state_modified' => '2025-06-01T00:00:00+00:00' }
+      result = described_class.run(capture_with(monitors: monitors))
+
+      expect(result.clusters.keys).to eq(['2024-01-12'])
+      expect(result.clusters['2024-01-12'].size).to eq(3)
+      expect(result.silent.size).to eq(4)
+    end
+
+    it 'records how long a silence has run' do
+      cap = capture_with(monitors: { '1' => {
+                           'id' => 1, 'name' => 'old', 'overall_state' => 'No Data',
+                           'message' => '@slack-x',
+                           'overall_state_modified' => '2024-01-12T00:00:00+00:00'
+                         } })
+      result = described_class.run(cap, today: Date.new(2026, 8, 5))
+
+      expect(result.silent.first[:days]).to eq(936)
+    end
+  end
+
   # The oracle as one command. Three hand-run steps whose result had to be read
   # off stdout are not a gate anybody else can run.
   describe 'the gate verb' do

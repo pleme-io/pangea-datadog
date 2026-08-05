@@ -13,6 +13,7 @@ require_relative 'absorb/emit'
 require_relative 'absorb/verify'
 require_relative 'absorb/receipt'
 require_relative 'absorb/roundtrip'
+require_relative 'absorb/audit'
 
 module Pangea
   module Datadog
@@ -122,6 +123,14 @@ module Pangea
       def gate_in(root, config_path, dir)
         emit(root: root, out_dir: dir, config_path: config_path)
         verify(root: root, out_dir: dir)
+      end
+
+      # A correctness audit of the captured estate. Read-only and OFFLINE --
+      # computed from a capture already on disk, no API call, nothing to
+      # approve. See Audit for why a broken monitor and a silent one are
+      # counted differently.
+      def audit(root:)
+        Audit.run(Capture.new(root))
       end
 
       def verify(root:, out_dir:)
