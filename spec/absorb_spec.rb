@@ -690,6 +690,113 @@ RSpec.describe Absorb do
       end
     end
 
+    def capture_with_thresholds(dir)
+      cap = Absorb::Capture.new(File.join(dir, 'estate'))
+      cap.prepare
+      cap.write(:monitors, '1', { 'id' => 1, 'name' => 'm', 'type' => 'metric alert',
+                                  'query' => 'avg(last_5m):x > 5', 'message' => 'msg', 'tags' => [],
+                                  'options' => { 'thresholds' => { 'critical' => 5, 'warning' => 3 } } })
+      cap
+    end
+
+    def monitor_schema(dir, monitor_block)
+      schema_file(dir, { 'datadog_monitor' => { 'block' => monitor_block } })
+    end
+
+    # THE REGRESSION THIS PINS. A block arrives either as one Hash or as a list
+    # of them, and `Array(hash)` gives the hash's PAIRS, not [hash]. Relying on
+    # it silently skipped every Hash-valued block -- monitor_thresholds on 231
+    # monitors was registered as a reached path and then never descended into,
+    # so the path count said covered while nothing had been checked.
+    it 'descends into a block emitted as a bare Hash' do
+      Dir.mktmpdir do |dir|
+        path = monitor_schema(dir, {
+                                'attributes' => { 'name' => { 'optional' => true },
+                                                  'type' => { 'optional' => true },
+                                                  'query' => { 'optional' => true },
+                                                  'message' => { 'optional' => true } },
+                                'block_types' => { 'monitor_thresholds' => { 'block' => { 'attributes' => {} } } }
+                              })
+
+        result = Absorb::Conform.run(capture: capture_with_thresholds(dir), schema_path: path, rules: rules)
+
+        expect(result.undeclared.map(&:key)).to include('monitor_thresholds.critical')
+        expect(result).not_to be_ok
+      end
+    end
+
+    it 'counts a nested path only when it actually descended' do
+      Dir.mktmpdir do |dir|
+        path = monitor_schema(dir, {
+                                'attributes' => {},
+                                'block_types' => { 'monitor_thresholds' => { 'block' => { 'attributes' => {} } } }
+                              })
+
+        result = Absorb::Conform.run(capture: capture_with_thresholds(dir), schema_path: path, rules: rules)
+
+        expect(result.nested_paths).to eq(1)
+      end
+    end
+
+    it 'flags a required attribute missing inside a nested block' do
+      Dir.mktmpdir do |dir|
+        path = monitor_schema(dir, {
+                                'attributes' => {},
+                                'block_types' => {
+                                  'monitor_thresholds' => {
+                                    'block' => { 'attributes' => { 'deep_required' => { 'required' => true } } }
+                                  }
+                                }
+                              })
+
+        result = Absorb::Conform.run(capture: capture_with_thresholds(dir), schema_path: path, rules: rules)
+
+        expect(result.missing_required.map(&:key)).to include('monitor_thresholds.deep_required')
+      end
+    end
+
+    it 'flags a computed-only attribute set inside a nested block' do
+      Dir.mktmpdir do |dir|
+        path = monitor_schema(dir, {
+                                'attributes' => {},
+                                'block_types' => {
+                                  'monitor_thresholds' => {
+                                    'block' => { 'attributes' => { 'critical' => { 'computed' => true } } }
+                                  }
+                                }
+                              })
+
+        result = Absorb::Conform.run(capture: capture_with_thresholds(dir), schema_path: path, rules: rules)
+
+        expect(result.computed_only.map(&:key)).to include('monitor_thresholds.critical')
+      end
+    end
+
+    # lifecycle is accepted on a RESOURCE, not inside a block. Allowing it at
+    # depth would let a genuinely undeclared nested key hide behind the same
+    # exemption that keeps the top level correct.
+    it 'does not extend the meta-argument exemption into nested blocks' do
+      Dir.mktmpdir do |dir|
+        cap = Absorb::Capture.new(File.join(dir, 'estate'))
+        cap.prepare
+        cap.write(:monitors, '1', { 'id' => 1, 'name' => 'm', 'type' => 'metric alert',
+                                    'query' => 'avg(last_5m):x > 5', 'message' => 'msg', 'tags' => [],
+                                    'options' => { 'thresholds' => { 'critical' => 5 } } })
+        path = monitor_schema(dir, {
+                                'attributes' => {},
+                                'block_types' => {
+                                  'monitor_thresholds' => {
+                                    'block' => { 'attributes' => { 'lifecycle' => { 'optional' => true } } }
+                                  }
+                                }
+                              })
+
+        result = Absorb::Conform.run(capture: cap, schema_path: path, rules: rules)
+
+        expect(result.undeclared.map(&:key)).to include('monitor_thresholds.critical')
+      end
+    end
+
     it 'refuses a schema document that holds no provider schemas' do
       Dir.mktmpdir do |dir|
         path = File.join(dir, 'schema.json')
