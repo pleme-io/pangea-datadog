@@ -152,6 +152,14 @@ module Pangea
           get_json('/api/v2/roles').fetch('data', [])
         end
 
+        # The account's permission CATALOG, not a permission grant. Read-only,
+        # and the only thing that says which permissions Datadog marks
+        # `restricted` -- a role's own payload lists permission ids and nothing
+        # about them. Measured on this estate: 342 permissions, 10 restricted.
+        def permissions
+          get_json('/api/v2/permissions').fetch('data', [])
+        end
+
         def rum_applications
           get_json('/api/v2/rum/applications').fetch('data', [])
         end

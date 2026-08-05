@@ -35,6 +35,8 @@ module Pangea
       # Which monitors are ours to declare, which dashboards are worth keeping,
       # how monitors group, and which archetypes exist all arrive via Rules.
       class Emit
+        Error = Class.new(StandardError)
+
         HEADER = <<~RUBY
           # frozen_string_literal: true
           #
@@ -315,12 +317,21 @@ module Pangea
         def emit_roles
           imports = {}
           entries = []
+          restricted = capture.restricted_permissions
 
           capture.each(:roles) do |id, payload|
             next if Normalize.role_managed?(payload)
 
+            # Emitting a role's permissions without knowing which are restricted
+            # produces code the provider refuses to plan. Fail by name here
+            # rather than shipping that and discovering it at plan time.
+            if restricted.nil? && !Array(payload.dig('relationships', 'permissions', 'data')).empty?
+              raise Error, "role #{id} declares permissions but the capture holds no " \
+                           'permissions catalog -- re-run `capture --kinds roles` to fetch it'
+            end
+
             slug = resource_slug(payload.dig('attributes', 'name'), id)
-            entries << [slug, Normalize.role(payload)]
+            entries << [slug, Normalize.role(payload, restricted: restricted)]
             imports["datadog_role.#{slug}"] = id
           end
           return imports if entries.empty?

@@ -822,10 +822,33 @@ module Pangea
         # that made the typed `datadog_dashboard` unusable. Emitting it is still
         # right: the code correctly describes the estate, and an apply converges
         # the live role. It is the round trip that is lossy, not the body.
-        def role(payload)
+        # RESTRICTED PERMISSIONS ARE DROPPED, and this is not a simplification.
+        #
+        # Datadog marks its default read permissions `restricted` and grants
+        # them to every role implicitly. The provider refuses outright to plan a
+        # role that names one:
+        #
+        #   permission f8e941cf-... is a restricted (default) permission. To
+        #   include it, set `default_permissions_opt_out` to `true`. Otherwise,
+        #   please remove it from your configuration.
+        #
+        # The estate's one adoptable role declares 15 permissions of which 9 are
+        # restricted, so this is the difference between a role that plans and a
+        # role that errors.
+        #
+        # The other branch of that message was tried and is WRONG here. Setting
+        # `default_permissions_opt_out = true` and keeping the full list clears
+        # the error but plans `0 to add, 1 to change`: the provider's import does
+        # not carry restricted permissions into state, so declaring them is
+        # permanent drift. Dropping them and letting the provider manage its own
+        # defaults is what reaches No changes.
+        def role(payload, restricted: nil)
           a = payload['attributes'] || {}
+          restricted ||= []
           permissions = Array(payload.dig('relationships', 'permissions', 'data'))
-                        .map { |p| { id: p['id'].to_s } }
+                        .map { |p| p['id'].to_s }
+                        .reject { |id| restricted.include?(id) }
+                        .map { |id| { id: id } }
           attrs = { name: a['name'].to_s }
           attrs[:permission] = permissions unless permissions.empty?
           canonicalize(attrs)
@@ -914,14 +937,26 @@ module Pangea
                                           apm_rum_flat_sampling_replay_sample_rate]
         }.freeze
 
-        def account_unmapped(kind, payload)
+        # `restricted` makes the dropped permissions VISIBLE. They live under
+        # relationships, not attributes, so the leftover-key scan below cannot
+        # see them and the drop would otherwise be silent -- 9 permissions
+        # disappearing from a role with nothing anywhere saying so.
+        def account_unmapped(kind, payload, restricted: nil)
           structural = ACCOUNT_STRUCTURAL.fetch(kind, [])
           attrs = payload['attributes'].is_a?(Hash) ? payload['attributes'] : payload
           unmanageable = ACCOUNT_UNMANAGEABLE.fetch(kind, [])
           leftover = attrs.keys - structural - account_mapped_keys(kind) -
                      ACCOUNT_SERVER_ATTRS - unmanageable
           present = unmanageable.select { |k| attrs.key?(k) && !blank?(attrs[k]) }
+          present += ['permission.restricted'] if dropped_restricted?(kind, payload, restricted)
           { fields: leftover.sort, unmanageable: present.sort }
+        end
+
+        def dropped_restricted?(kind, payload, restricted)
+          return false unless kind == 'datadog_role' && restricted
+
+          Array(payload.dig('relationships', 'permissions', 'data'))
+            .any? { |p| restricted.include?(p['id'].to_s) }
         end
 
         ACCOUNT_MAPPED = {

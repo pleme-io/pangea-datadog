@@ -159,7 +159,7 @@ module Pangea
               when 'datadog_logs_metric' then Normalize.logs_metric(payload)
               when 'datadog_logs_index' then Normalize.logs_index(payload)
               when 'datadog_team' then Normalize.team(payload)
-              when 'datadog_role' then Normalize.role(payload)
+              when 'datadog_role' then Normalize.role(payload, restricted: capture.restricted_permissions)
               when 'datadog_rum_application' then Normalize.rum_application(payload)
               when 'datadog_apm_retention_filter' then Normalize.apm_retention_filter(payload)
               when 'datadog_dashboard_list' then Normalize.dashboard_list(payload)
@@ -384,7 +384,7 @@ module Pangea
             [[], []]
           when 'datadog_team', 'datadog_role', 'datadog_rum_application',
                'datadog_apm_retention_filter', 'datadog_dashboard_list'
-            u = Normalize.account_unmapped(kind, payload)
+            u = Normalize.account_unmapped(kind, payload, restricted: capture.restricted_permissions)
             [u[:fields], u[:unmanageable]]
           else
             [Normalize.dashboard_unmapped(payload), []]

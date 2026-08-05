@@ -15,6 +15,13 @@ module Pangea
       class Capture
         MANIFEST = 'manifest.json'
 
+        # A FILE at the capture root, deliberately not a kind directory. It is a
+        # reference catalog -- the provider has no `datadog_permission` resource,
+        # so there is nothing to emit from it -- and verify's coverage check
+        # enumerates DIRECTORIES, so a kind directory here would read as a
+        # permanent uncovered gap.
+        PERMISSIONS = 'permissions.json'
+
         attr_reader :root
 
         def initialize(root)
@@ -107,6 +114,13 @@ module Pangea
             progress&.call(kind, items.size)
           end
 
+          # Roles are the only consumer, so it is fetched only when they are.
+          if kinds.include?(:roles)
+            catalog = client.permissions
+            capture.write_permissions(catalog)
+            progress&.call(:permissions, catalog.size)
+          end
+
           capture.write_manifest(counts, site: client.site)
           counts
         end
@@ -180,6 +194,28 @@ module Pangea
         # MERGES. A partial capture (`--kinds logs_metrics`) must not erase the
         # counts of the kinds it did not fetch, or the manifest would claim the
         # estate is whatever the last narrow run happened to touch.
+        def write_permissions(catalog)
+          File.write(File.join(root, PERMISSIONS), JSON.pretty_generate(catalog))
+        end
+
+        def permissions_captured?
+          File.exist?(File.join(root, PERMISSIONS))
+        end
+
+        # The ids Datadog marks `restricted` -- the default read permissions it
+        # grants every role implicitly. The provider REFUSES a plan that names
+        # one, so emit has to drop them.
+        def restricted_permissions
+          return nil unless permissions_captured?
+          return @restricted_permissions if defined?(@restricted_permissions)
+
+          @restricted_permissions =
+            JSON.parse(File.read(File.join(root, PERMISSIONS)))
+               .select { |p| p.dig('attributes', 'restricted') }
+               .map { |p| p['id'].to_s }
+               .to_set
+        end
+
         def write_manifest(counts, site:)
           merged = manifest.fetch('counts', {}).merge(counts.transform_keys(&:to_s))
           File.write(

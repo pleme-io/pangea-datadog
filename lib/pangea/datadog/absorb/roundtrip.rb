@@ -293,7 +293,7 @@ module Pangea
           when :logs_metrics then stringify(Normalize.logs_metric(payload))
           when :logs_indexes then stringify(Normalize.logs_index(payload))
           when :teams then stringify(Normalize.team(payload))
-          when :roles then stringify(Normalize.role(payload))
+          when :roles then stringify(Normalize.role(payload, restricted: capture.restricted_permissions))
           when :rum_applications then stringify(Normalize.rum_application(payload))
           when :apm_retention_filters then stringify(Normalize.apm_retention_filter(payload))
           when :dashboard_lists then stringify(Normalize.dashboard_list(payload))

@@ -2014,6 +2014,7 @@ RSpec.describe Absorb do
         cap.prepare
         cap.write(:roles, 'r1', managed_role)
         cap.write(:roles, 'r2', custom_role)
+        cap.write_permissions([{ 'id' => 'p1', 'attributes' => { 'restricted' => false } }])
         imports = Absorb::Emit.new(capture: cap, out_dir: File.join(dir, 'g'), rules: rules).run
 
         expect(imports.keys).to eq(['datadog_role.datadog_read_write_r2'])
@@ -2022,6 +2023,74 @@ RSpec.describe Absorb do
 
     it 'carries a role permission as an id block' do
       expect(Absorb::Normalize.role(custom_role)[:permission]).to eq([{ id: 'p1' }])
+    end
+
+    # Datadog grants its default read permissions to every role implicitly and
+    # marks them `restricted`. The provider REFUSES to plan a role that names
+    # one, so emitting them is not a cosmetic difference -- it is the difference
+    # between a role that plans and one that errors. The estate's single
+    # adoptable role declares 15 permissions of which 9 are restricted.
+    it 'drops restricted permissions, which the provider refuses to plan' do
+      role = { 'id' => 'r9', 'type' => 'roles',
+               'attributes' => { 'name' => 'Mixed' },
+               'relationships' => { 'permissions' => { 'data' => [
+                 { 'id' => 'keep1' }, { 'id' => 'restricted1' }, { 'id' => 'keep2' }
+               ] } } }
+
+      attrs = Absorb::Normalize.role(role, restricted: %w[restricted1].to_set)
+
+      expect(attrs[:permission]).to eq([{ id: 'keep1' }, { id: 'keep2' }])
+    end
+
+    it 'omits the permission block entirely when every permission is restricted' do
+      role = { 'id' => 'r9', 'type' => 'roles',
+               'attributes' => { 'name' => 'AllDefault' },
+               'relationships' => { 'permissions' => { 'data' => [{ 'id' => 'r1' }, { 'id' => 'r2' }] } } }
+
+      attrs = Absorb::Normalize.role(role, restricted: %w[r1 r2].to_set)
+
+      expect(attrs).not_to have_key(:permission)
+    end
+
+    it 'reads the restricted set out of the captured catalog' do
+      Dir.mktmpdir do |dir|
+        cap = Absorb::Capture.new(File.join(dir, 'estate'))
+        cap.prepare
+        cap.write_permissions([
+                                { 'id' => 'a', 'attributes' => { 'restricted' => true } },
+                                { 'id' => 'b', 'attributes' => { 'restricted' => false } }
+                              ])
+
+        expect(cap.restricted_permissions).to eq(Set['a'])
+      end
+    end
+
+    # Emitting permissions without knowing which are restricted produces code
+    # the provider refuses to plan. That has to fail by name at emit rather
+    # than surface as a plan error much later.
+    it 'refuses to emit a role with permissions when no catalog was captured' do
+      Dir.mktmpdir do |dir|
+        cap = Absorb::Capture.new(File.join(dir, 'estate'))
+        cap.prepare
+        cap.write(:roles, 'r2', custom_role)
+
+        expect { Absorb::Emit.new(capture: cap, out_dir: File.join(dir, 'g'), rules: rules).run }
+          .to raise_error(Absorb::Emit::Error, /permissions catalog/)
+      end
+    end
+
+    # A role with no permissions needs no catalog, so it must not be blocked by
+    # the guard above.
+    it 'emits a permissionless role without a catalog' do
+      Dir.mktmpdir do |dir|
+        cap = Absorb::Capture.new(File.join(dir, 'estate'))
+        cap.prepare
+        cap.write(:roles, 'r3', { 'id' => 'r3', 'type' => 'roles', 'attributes' => { 'name' => 'Bare' } })
+
+        imports = Absorb::Emit.new(capture: cap, out_dir: File.join(dir, 'g'), rules: rules).run
+
+        expect(imports.keys).to eq(['datadog_role.bare_r3'])
+      end
     end
 
     # The provider accepts exactly one filter_type and rejects the others at
