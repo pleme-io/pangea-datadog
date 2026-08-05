@@ -180,6 +180,23 @@ module Pangea
           get_json("/api/v2/dashboard/lists/manual/#{id}/dashboards").fetch('dashboards', [])
         end
 
+        # Returns [code, body] and never raises on a non-2xx. get_json raises,
+        # which is right for a capture (a failed fetch means an incomplete
+        # capture) and wrong for a census, where "the key cannot read this" is
+        # itself the finding.
+        def probe(path)
+          uri = URI("https://api.#{@site}#{path}")
+          req = Net::HTTP::Get.new(uri)
+          req['DD-API-KEY']         = @api_key
+          req['DD-APPLICATION-KEY'] = @app_key
+          req['Accept']             = 'application/json'
+
+          res = Net::HTTP.start(uri.hostname, uri.port, use_ssl: true, read_timeout: 60) do |http|
+            http.request(req)
+          end
+          [res.code.to_i, res.body]
+        end
+
         private
 
         def get_json(path)

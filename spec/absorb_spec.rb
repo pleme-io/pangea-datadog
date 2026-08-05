@@ -583,6 +583,89 @@ RSpec.describe Absorb do
   # The roundtrip verb decides adoption readiness, so its pure logic is tested
   # here without touching terraform or Datadog. The terraform half is exercised
   # by running the verb against the live estate.
+  describe Absorb::Census do
+    # A client that answers whatever the test says, including refusals.
+    def client_answering(map)
+      Class.new do
+        def initialize(map) = @map = map
+
+        def probe(path)
+          @map.fetch(path, [404, ''])
+        end
+      end.new(map)
+    end
+
+    def ok(items) = [200, JSON.generate({ 'data' => items })]
+
+    it 'calls a type with objects a gap' do
+      result = Absorb::Census.run(
+        client: client_answering('/api/v2/incidents/config/types' => ok([{ 'id' => 'a' }])),
+        covered: 14
+      )
+
+      gap = result.gaps.find { |g| g.type == 'datadog_incident_type' }
+      expect(gap.count).to eq(1)
+      expect(result).not_to be_ok
+    end
+
+    it 'calls a reachable type with no objects an absence, not a gap' do
+      result = Absorb::Census.run(
+        client: client_answering('/api/v2/incidents/config/types' => ok([])),
+        covered: 14
+      )
+
+      expect(result.gaps.map(&:type)).not_to include('datadog_incident_type')
+      expect(result.empty.map(&:type)).to include('datadog_incident_type')
+    end
+
+    # THE ONE THAT MATTERS. This account's app key answers 403 for security
+    # monitoring, workflows, datasets and org groups. Folding those into
+    # "empty" would report full coverage of a surface nobody has looked at.
+    it 'never folds a refusal into zero' do
+      result = Absorb::Census.run(
+        client: client_answering('/api/v2/security_monitoring/rules' => [403, '']),
+        covered: 14
+      )
+
+      expect(result.empty.map(&:type)).not_to include('datadog_security_monitoring_rule')
+      expect(result.unreachable.map(&:type)).to include('datadog_security_monitoring_rule')
+      expect(result.unreachable.find { |u| u.type == 'datadog_security_monitoring_rule' }.code).to eq(403)
+    end
+
+    # An unreachable type is not a gap either: the census could not answer, so
+    # it must not claim absorb is missing something it has not established.
+    it 'does not count a refusal as a gap' do
+      result = Absorb::Census.run(
+        client: client_answering(Absorb::Census::PROBES.values.to_h { |path, _| [path, [403, '']] }),
+        covered: 14
+      )
+
+      expect(result.gaps).to be_empty
+      expect(result).to be_ok
+    end
+
+    it 'reports live objects no provider resource can manage' do
+      result = Absorb::Census.run(
+        client: client_answering('/api/v1/notebooks' => ok([{ 'id' => 1 }, { 'id' => 2 }])),
+        covered: 14
+      )
+
+      notebooks = result.unmanageable.find { |u| u.type == 'notebooks' }
+      expect(notebooks.count).to eq(2)
+      # unmanageable is estate surface, not a gap absorb could ever close
+      expect(result.gaps.map(&:type)).not_to include('notebooks')
+    end
+
+    it 'survives a body that is not JSON rather than aborting the census' do
+      result = Absorb::Census.run(
+        client: client_answering('/api/v2/incidents/config/types' => [200, '<html>nope']),
+        covered: 14
+      )
+
+      expect(result.empty.map(&:type)).to include('datadog_incident_type')
+    end
+  end
+
   describe Absorb::Roundtrip do
     around { |example| Dir.mktmpdir { |dir| @dir = dir; example.run } }
 

@@ -33,6 +33,10 @@ parser = OptionParser.new do |o|
       classify   report provenance and tier over a capture
       emit       generate typed Pangea Ruby from a capture
       verify     prove the generated code state-matches the capture
+      census     what the estate holds that absorb does NOT absorb. Read-only
+                 and counts only -- nothing is written. Distinguishes a type
+                 with zero objects (an absence) from one the key cannot read
+                 (unanswerable), which are not the same thing.
       audit      report monitors that CANNOT evaluate, and monitors that have
                  gone silent (OFFLINE: reads the capture, never calls Datadog)
       gate       emit + verify in one step, one receipt, exit 0/1/2
@@ -143,6 +147,22 @@ when 'audit'
   rescue StandardError => e
     receipt = Absorb::Receipt.error(command: 'audit', target: File.basename(options[:root]),
                                     message: e.message)
+    warn e.message
+    emit_receipt(receipt, options[:receipt_dir])
+    exit receipt.exit_code
+  end
+  puts result
+  emit_receipt(receipt, options[:receipt_dir])
+  exit receipt.exit_code
+
+when 'census'
+  begin
+    result  = Absorb.census(config_path: options[:config], account: options[:account],
+                            site: options[:site])
+    receipt = (result.ok? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
+              .call(command: 'census', target: 'estate', findings: result.findings)
+  rescue StandardError => e
+    receipt = Absorb::Receipt.error(command: 'census', target: 'estate', message: e.message)
     warn e.message
     emit_receipt(receipt, options[:receipt_dir])
     exit receipt.exit_code

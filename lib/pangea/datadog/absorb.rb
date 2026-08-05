@@ -14,6 +14,7 @@ require_relative 'absorb/verify'
 require_relative 'absorb/receipt'
 require_relative 'absorb/roundtrip'
 require_relative 'absorb/audit'
+require_relative 'absorb/census'
 
 module Pangea
   module Datadog
@@ -129,6 +130,19 @@ module Pangea
       # computed from a capture already on disk, no API call, nothing to
       # approve. See Audit for why a broken monitor and a silent one are
       # counted differently.
+      # Read-only and counts only -- see Census for why it must never persist
+      # what it reads.
+      def census(config_path: nil, account: nil, site: nil)
+        cfg = config_path ? Config.load(config_path) : nil
+        client =
+          if cfg
+            Client.from_config(cfg, site: site)
+          else
+            Client.for_account(account, site: site || Client::DEFAULT_SITE)
+          end
+        Census.run(client: client, covered: Emit::ADDRESS_SHARDS.keys.size)
+      end
+
       def audit(root:)
         Audit.run(Capture.new(root))
       end
