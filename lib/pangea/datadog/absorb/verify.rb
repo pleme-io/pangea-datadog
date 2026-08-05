@@ -154,6 +154,11 @@ module Pangea
               else Normalize.dashboard(payload)
               end
 
+            stale = Normalize.sidecar_fidelity(kind, payload, sidecar_for(kind, id))
+            unless stale.empty?
+              diffs << { address: address, attribute: "(stale sidecar: #{stale.join(', ')})" }
+            end
+
             leftover, unmanaged = unmapped_keys(kind, payload)
             unmapped << { address: address, keys: leftover } unless leftover.empty?
             unmanage << { address: address, keys: unmanaged } unless unmanaged.empty?
@@ -222,6 +227,16 @@ module Pangea
           'datadog_dashboard_list' => :dashboard_lists,
           'datadog_powerpack' => :powerpacks
         }.freeze
+
+        SIDECAR_KINDS = {
+          'datadog_dashboard_json' => :dashboards,
+          'datadog_powerpack' => :powerpacks
+        }.freeze
+
+        def sidecar_for(kind, id)
+          capture_kind = SIDECAR_KINDS[kind]
+          capture_kind && capture.normalized(capture_kind, id)
+        end
 
         def load_payload(kind, id)
           capture.read(KIND_TO_CAPTURE.fetch(kind, :dashboards), id)

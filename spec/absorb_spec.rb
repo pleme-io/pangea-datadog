@@ -746,6 +746,120 @@ RSpec.describe Absorb do
     end
   end
 
+  # A reconciled object has a hole in the gate: emit ships the sidecar AND
+  # verify derives its expectation from the sidecar, so the two agree by
+  # construction. The failure that hides is STALENESS, and these invariants are
+  # what closes it.
+  #
+  # Found a real one on first run against the live estate: a dashboard whose
+  # capture reported 48 widgets and whose sidecar reported 34, with disjoint
+  # titles -- two reads of the same object taken either side of an edit.
+  describe 'sidecar fidelity' do
+    let(:live) do
+      { 'title' => 'Prod', 'template_variables' => [{ 'name' => 'env' }],
+        'widgets' => [{ 'definition' => { 'title' => 'Outer', 'type' => 'group',
+                                          'widgets' => [{ 'definition' => { 'title' => 'Inner' } }] } }] }
+    end
+
+    def fidelity(sidecar, kind: 'datadog_dashboard_json', payload: live)
+      Absorb::Normalize.sidecar_fidelity(kind, payload, sidecar)
+    end
+
+    it 'passes when both reads describe the same object' do
+      expect(fidelity(live)).to be_empty
+    end
+
+    it 'says nothing when there is no sidecar to be stale' do
+      expect(fidelity(nil)).to be_empty
+    end
+
+    it 'ignores a kind that has no sidecar' do
+      expect(fidelity(live, kind: 'datadog_monitor')).to be_empty
+    end
+
+    it 'catches a renamed dashboard' do
+      expect(fidelity(live.merge('title' => 'Staging'))).to eq(['title'])
+    end
+
+    # Groups nest, so a flat count would miss an edit made inside one.
+    it 'catches a widget removed from inside a group' do
+      flattened = { 'title' => 'Prod', 'template_variables' => [{ 'name' => 'env' }],
+                    'widgets' => [{ 'definition' => { 'title' => 'Outer', 'type' => 'group',
+                                                      'widgets' => [] } }] }
+
+      expect(fidelity(flattened)).to eq(%w[widget_count widget_titles])
+    end
+
+    it 'catches a retitled widget even when the count is unchanged' do
+      renamed = Marshal.load(Marshal.dump(live))
+      renamed['widgets'][0]['definition']['widgets'][0]['definition']['title'] = 'Changed'
+
+      expect(fidelity(renamed)).to eq(['widget_titles'])
+    end
+
+    it 'catches a dropped template variable' do
+      expect(fidelity(live.merge('template_variables' => []))).to eq(['template_variables'])
+    end
+
+    # The provider's powerpack state is a FLAT widget list -- the API's group
+    # wrapper IS the powerpack -- so counting both recursively would compare a
+    # flat list against a nested one and fail on every powerpack.
+    describe 'powerpacks' do
+      let(:pack) do
+        { 'attributes' => { 'name' => 'Network', 'tags' => ['tag:akeyless'],
+                            'group_widget' => { 'definition' => {
+                              'widgets' => [{ 'definition' => { 'title' => 'a' } },
+                                            { 'definition' => { 'title' => 'b' } }]
+                            } } } }
+      end
+
+      def pp_fidelity(sidecar)
+        Absorb::Normalize.sidecar_fidelity('datadog_powerpack', pack, sidecar)
+      end
+
+      it 'compares the flat provider list against the nested API group' do
+        expect(pp_fidelity({ 'name' => 'Network', 'tags' => ['tag:akeyless'],
+                             'widget' => [{ 'q' => 1 }, { 'q' => 2 }] })).to be_empty
+      end
+
+      it 'catches a widget added since the sidecar was recorded' do
+        expect(pp_fidelity({ 'name' => 'Network', 'tags' => ['tag:akeyless'],
+                             'widget' => [{ 'q' => 1 }] })).to eq(['widget_count'])
+      end
+
+      it 'catches a retagged powerpack' do
+        expect(pp_fidelity({ 'name' => 'Network', 'tags' => [],
+                             'widget' => [{ 'q' => 1 }, { 'q' => 2 }] })).to eq(['tags'])
+      end
+    end
+
+    # A gate that cannot fail is worth nothing, so this drives it end to end:
+    # emit from a sidecar, then age the CAPTURE underneath it.
+    describe 'end to end' do
+      around { |example| Dir.mktmpdir { |dir| @dir = dir; example.run } }
+
+      it 'fails verify when the capture moves on and the sidecar does not' do
+        cap = Absorb::Capture.new(File.join(@dir, 'estate'))
+        cap.prepare
+        cap.write(:dashboards, 'abc-def-ghi', dashboard_payload)
+        cap.write_normalized(:dashboards, 'abc-def-ghi', dashboard_payload)
+        out = File.join(@dir, 'generated')
+        Absorb::Emit.new(capture: cap, out_dir: out, rules: rules).run
+
+        expect(Absorb::Verify.new(capture: cap, out_dir: out).run).to be_ok
+
+        edited = Marshal.load(Marshal.dump(dashboard_payload))
+        edited['widgets'] << { 'id' => 999, 'definition' => { 'type' => 'note', 'title' => 'New' } }
+        cap.write(:dashboards, 'abc-def-ghi', edited)
+
+        result = Absorb::Verify.new(capture: cap, out_dir: out).run
+
+        expect(result).not_to be_ok
+        expect(result.diffs.map { |d| d[:attribute] }.join).to include('stale sidecar')
+      end
+    end
+  end
+
   # Powerpacks. `datadog_powerpack` models widgets as 31 typed sub-blocks --
   # the shape that made the typed `datadog_dashboard` unusable -- and unlike
   # dashboards there is no `_json` escape hatch. So no projection of the API
@@ -1010,9 +1124,21 @@ RSpec.describe Absorb do
   describe 'the reconcile sidecar' do
     around { |example| Dir.mktmpdir { |dir| @dir = dir; example.run } }
 
+    # A REAL sidecar is the provider's read of the same object, so it agrees
+    # with the capture on title, widget count, widget titles and template
+    # variables -- it differs only in how it spells the body. The earlier
+    # fixture here did not, and the stale-sidecar check was right to reject it.
     let(:provider_body) do
       { 'title' => 'Production Overview', 'layout_type' => 'ordered',
-        'widgets' => [{ 'id' => 1, 'definition' => { 'type' => 'note', 'content' => 'from the provider' } }] }
+        'template_variables' => [{ 'name' => 'env', 'prefix' => 'env', 'default' => '*' }],
+        'widgets' => [
+          { 'id' => 111,
+            'definition' => {
+              'type' => 'group',
+              'widgets' => [{ 'id' => 222,
+                              'definition' => { 'type' => 'note', 'content' => 'from the provider' } }]
+            } }
+        ] }
     end
 
     def capture_with_sidecar(body: provider_body)
@@ -1053,7 +1179,8 @@ RSpec.describe Absorb do
     it 'prefers the recorded body when there is one' do
       body = Absorb::Normalize.dashboard_json_for(dashboard_payload, provider_body)
 
-      expect(JSON.parse(body[:dashboard])['widgets'][0]['definition']['content'])
+      expect(JSON.parse(body[:dashboard]).dig('widgets', 0, 'definition', 'widgets', 0,
+                                              'definition', 'content'))
         .to eq('from the provider')
     end
 

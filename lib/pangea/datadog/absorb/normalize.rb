@@ -633,6 +633,81 @@ module Pangea
                        sample_rate: payload.dig('filter', 'sample_rate') }.compact] }
         end
 
+        # ── sidecar fidelity ─────────────────────────────────────────────
+        #
+        # A reconciled object has a hole in the gate. emit ships the sidecar AND
+        # verify derives its expectation from the sidecar, so the two agree by
+        # construction -- a comparison that cannot fail, covering 48 dashboards
+        # and 9 powerpacks.
+        #
+        # The failure that hole hides is STALENESS. reconcile records the
+        # provider's read at time T; someone edits the object in Datadog at T+1;
+        # a re-capture refreshes the raw API payload but leaves the sidecar
+        # untouched; emit ships the old body and verify passes green while the
+        # generated code no longer describes the estate -- exactly what the
+        # oracle exists to prevent.
+        #
+        # These are facts BOTH reads must report identically. A disagreement
+        # means the sidecar no longer describes what was captured, so it is a
+        # gate failure, not a warning.
+        def sidecar_fidelity(kind, payload, sidecar)
+          return [] if sidecar.nil?
+
+          case kind
+          when 'datadog_dashboard_json' then dashboard_fidelity(payload, sidecar)
+          when 'datadog_powerpack' then powerpack_fidelity(payload, sidecar)
+          else []
+          end
+        end
+
+        def dashboard_fidelity(payload, sidecar)
+          disagreements(
+            'title' => [payload['title'].to_s, sidecar['title'].to_s],
+            'widget_count' => [count_widgets(payload['widgets']), count_widgets(sidecar['widgets'])],
+            'widget_titles' => [widget_titles(payload['widgets']), widget_titles(sidecar['widgets'])],
+            'template_variables' => [variable_names(payload['template_variables']),
+                                     variable_names(sidecar['template_variables'])]
+          )
+        end
+
+        def powerpack_fidelity(payload, sidecar)
+          attributes = payload['attributes'] || {}
+          disagreements(
+            'name' => [attributes['name'].to_s, sidecar['name'].to_s],
+            'widget_count' => [count_widgets(attributes.dig('group_widget', 'definition', 'widgets')),
+                               count_widgets_flat(sidecar['widget'])],
+            'tags' => [Array(attributes['tags']).sort, Array(sidecar['tags']).sort]
+          )
+        end
+
+        def disagreements(checks)
+          checks.reject { |_, (a, b)| a == b }.keys.sort
+        end
+
+        # Groups nest, so a flat count would miss an edit inside one.
+        def count_widgets(widgets)
+          Array(widgets).sum do |w|
+            nested = w.dig('definition', 'widgets')
+            1 + count_widgets(nested)
+          end
+        end
+
+        # The provider's powerpack state is a FLAT widget list -- the API's
+        # group wrapper is the powerpack itself -- so counting it recursively
+        # would compare a flat list against a nested one.
+        def count_widgets_flat(widgets) = Array(widgets).size
+
+        def widget_titles(widgets)
+          Array(widgets).flat_map do |w|
+            definition = w['definition'] || {}
+            [definition['title'].to_s] + widget_titles(definition['widgets'])
+          end.reject(&:empty?).sort
+        end
+
+        def variable_names(variables)
+          Array(variables).map { |v| v['name'].to_s }.sort
+        end
+
         # ── powerpacks ───────────────────────────────────────────────────
         #
         # `datadog_powerpack` models widgets as 31 typed sub-blocks -- the shape
