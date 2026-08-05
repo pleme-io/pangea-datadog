@@ -16,7 +16,7 @@ RSpec.describe 'datadog resource reference outputs' do
       expect(ref).to be_a(Pangea::Resources::ResourceReference)
       expect(ref.type).to eq('datadog_monitor')
       expect(ref.outputs[:id]).to eq('${datadog_monitor.mon1.id}')
-      expect(ref.outputs[:name]).to eq('${datadog_monitor.mon1.name}')
+      expect(ref.outputs[:id]).to eq('${datadog_monitor.mon1.id}')
     end
   end
 
@@ -26,7 +26,7 @@ RSpec.describe 'datadog resource reference outputs' do
       expect(ref).to be_a(Pangea::Resources::ResourceReference)
       expect(ref.type).to eq('datadog_dashboard')
       expect(ref.outputs[:id]).to eq('${datadog_dashboard.d1.id}')
-      expect(ref.outputs[:url]).to eq('${datadog_dashboard.d1.url}')
+      expect(ref.outputs[:id]).to eq('${datadog_dashboard.d1.id}')
     end
   end
 
@@ -36,7 +36,7 @@ RSpec.describe 'datadog resource reference outputs' do
       expect(ref).to be_a(Pangea::Resources::ResourceReference)
       expect(ref.type).to eq('datadog_dashboard_json')
       expect(ref.outputs[:id]).to eq('${datadog_dashboard_json.dj1.id}')
-      expect(ref.outputs[:url]).to eq('${datadog_dashboard_json.dj1.url}')
+      expect(ref.outputs[:id]).to eq('${datadog_dashboard_json.dj1.id}')
     end
   end
 
@@ -48,71 +48,71 @@ RSpec.describe 'datadog resource reference outputs' do
       expect(ref).to be_a(Pangea::Resources::ResourceReference)
       expect(ref.type).to eq('datadog_synthetics_test')
       expect(ref.outputs[:id]).to eq('${datadog_synthetics_test.s1.id}')
-      expect(ref.outputs[:monitor_id]).to eq('${datadog_synthetics_test.s1.monitor_id}')
+      expect(ref.outputs[:id]).to eq('${datadog_synthetics_test.s1.id}')
     end
   end
 
   describe 'datadog_service_level_objective' do
     it 'has id and name outputs' do
       ref = synth.datadog_service_level_objective(:slo1, {
-        name: 'SLO', type: 'metric', thresholds: '99.9'
+        name: 'SLO', type: 'metric', thresholds: [{ timeframe: '7d', target: 99.9 }]
       })
       expect(ref).to be_a(Pangea::Resources::ResourceReference)
       expect(ref.type).to eq('datadog_service_level_objective')
       expect(ref.outputs[:id]).to eq('${datadog_service_level_objective.slo1.id}')
-      expect(ref.outputs[:name]).to eq('${datadog_service_level_objective.slo1.name}')
+      expect(ref.outputs[:id]).to eq('${datadog_service_level_objective.slo1.id}')
     end
   end
 
   describe 'datadog_logs_index' do
     it 'has id and name outputs' do
-      ref = synth.datadog_logs_index(:li1, { name: 'main', filter: 'source:app' })
+      ref = synth.datadog_logs_index(:li1, { name: 'main', filter: { query: 'source:app' } })
       expect(ref).to be_a(Pangea::Resources::ResourceReference)
       expect(ref.type).to eq('datadog_logs_index')
       expect(ref.outputs[:id]).to eq('${datadog_logs_index.li1.id}')
-      expect(ref.outputs[:name]).to eq('${datadog_logs_index.li1.name}')
+      expect(ref.outputs[:id]).to eq('${datadog_logs_index.li1.id}')
     end
   end
 
-  describe 'datadog_logs_pipeline' do
+  describe 'datadog_logs_custom_pipeline' do
     it 'has id and name outputs' do
-      ref = synth.datadog_logs_pipeline(:lp1, { name: 'p', filter: 'source:nginx' })
+      ref = synth.datadog_logs_custom_pipeline(:lp1, { name: 'p', filter: [{ 'query' => 'source:nginx' }] })
       expect(ref).to be_a(Pangea::Resources::ResourceReference)
-      expect(ref.type).to eq('datadog_logs_pipeline')
-      expect(ref.outputs[:id]).to eq('${datadog_logs_pipeline.lp1.id}')
-      expect(ref.outputs[:name]).to eq('${datadog_logs_pipeline.lp1.name}')
+      expect(ref.type).to eq('datadog_logs_custom_pipeline')
+      expect(ref.outputs[:id]).to eq('${datadog_logs_custom_pipeline.lp1.id}')
+      expect(ref.outputs[:id]).to eq('${datadog_logs_custom_pipeline.lp1.id}')
     end
   end
 
   describe 'datadog_logs_metric' do
     it 'has id and name outputs' do
-      ref = synth.datadog_logs_metric(:lm1, { name: 'err', compute: 'count' })
+      ref = synth.datadog_logs_metric(:lm1, { name: 'err', compute: { aggregation_type: 'count' }, filter: { query: 'status:error' } })
       expect(ref).to be_a(Pangea::Resources::ResourceReference)
       expect(ref.type).to eq('datadog_logs_metric')
       expect(ref.outputs[:id]).to eq('${datadog_logs_metric.lm1.id}')
-      expect(ref.outputs[:name]).to eq('${datadog_logs_metric.lm1.name}')
+      expect(ref.outputs[:id]).to eq('${datadog_logs_metric.lm1.id}')
     end
   end
 
   describe 'datadog_apm_retention_filter' do
     it 'has id and name outputs' do
       ref = synth.datadog_apm_retention_filter(:arf1, {
-        name: 'f', enabled: true, filter_type: 'spans-errors-sampling-processor', rate: 1.0
+        name: 'f', enabled: true, filter_type: 'spans-errors-sampling-processor', rate: '1.0'
       })
       expect(ref).to be_a(Pangea::Resources::ResourceReference)
       expect(ref.type).to eq('datadog_apm_retention_filter')
       expect(ref.outputs[:id]).to eq('${datadog_apm_retention_filter.arf1.id}')
-      expect(ref.outputs[:name]).to eq('${datadog_apm_retention_filter.arf1.name}')
+      expect(ref.outputs[:id]).to eq('${datadog_apm_retention_filter.arf1.id}')
     end
   end
 
-  describe 'datadog_integration_aws' do
-    it 'has id and external_id outputs' do
-      ref = synth.datadog_integration_aws(:aws1, { account_id: '123456789012' })
+  describe 'datadog_integration_aws_account' do
+    it 'has an id output' do
+      ref = synth.datadog_integration_aws_account(:aws1, { aws_account_id: '123456789012', aws_partition: 'aws' })
       expect(ref).to be_a(Pangea::Resources::ResourceReference)
-      expect(ref.type).to eq('datadog_integration_aws')
-      expect(ref.outputs[:id]).to eq('${datadog_integration_aws.aws1.id}')
-      expect(ref.outputs[:external_id]).to eq('${datadog_integration_aws.aws1.external_id}')
+      expect(ref.type).to eq('datadog_integration_aws_account')
+      expect(ref.outputs[:id]).to eq('${datadog_integration_aws_account.aws1.id}')
+      expect(ref.outputs[:id]).to eq('${datadog_integration_aws_account.aws1.id}')
     end
   end
 

@@ -162,34 +162,36 @@ RSpec.describe 'datadog resource optional attribute synthesis' do
       expect(config['is_read_only']).to eq(false)
     end
 
-    it 'synthesizes template_variables' do
+    it 'synthesizes template_variable' do
       synth.datadog_dashboard(:test, {
-        title: 'T', layout_type: 'ordered', template_variables: ['host', 'env']
+        title: 'T', layout_type: 'ordered',
+        template_variable: [{ 'name' => 'host' }, { 'name' => 'env' }]
       })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_dashboard', 'test')
-      expect(config['template_variables']).to eq(['host', 'env'])
+      expect(config['template_variable']).to eq([{ 'name' => 'host' }, { 'name' => 'env' }])
     end
 
-    it 'synthesizes widgets' do
+    it 'synthesizes widget' do
       synth.datadog_dashboard(:test, {
-        title: 'T', layout_type: 'ordered', widgets: '{"type":"timeseries"}'
+        title: 'T', layout_type: 'ordered',
+        widget: [{ 'definition' => { 'type' => 'timeseries' } }]
       })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_dashboard', 'test')
-      expect(config['widgets']).to eq('{"type":"timeseries"}')
+      expect(config['widget']).to eq([{ 'definition' => { 'type' => 'timeseries' } }])
     end
   end
 
   describe 'datadog_synthetics_test optional fields' do
-    it 'synthesizes config' do
+    it 'synthesizes config_variable' do
       synth.datadog_synthetics_test(:test, {
         name: 'Check', type: 'api', status: 'live', locations: ['aws:us-east-1'],
-        config: '{"request":{"url":"https://example.com"}}'
+        config_variable: [{ 'name' => 'HOST', 'type' => 'text', 'pattern' => 'example.com' }]
       })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_synthetics_test', 'test')
-      expect(config['config']).to include('example.com')
+      expect(config['config_variable'].first['pattern']).to include('example.com')
     end
 
     it 'synthesizes message' do
@@ -202,14 +204,14 @@ RSpec.describe 'datadog resource optional attribute synthesis' do
       expect(config['message']).to eq('Test failed')
     end
 
-    it 'synthesizes options' do
+    it 'synthesizes options_list' do
       synth.datadog_synthetics_test(:test, {
         name: 'Check', type: 'api', status: 'live', locations: ['aws:us-east-1'],
-        options: '{"tick_every":300}'
+        options_list: { 'tick_every' => 300 }
       })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_synthetics_test', 'test')
-      expect(config['options']).to eq('{"tick_every":300}')
+      expect(config.dig('options_list', 'tick_every')).to eq(300)
     end
 
     it 'synthesizes subtype' do
@@ -236,7 +238,7 @@ RSpec.describe 'datadog resource optional attribute synthesis' do
   describe 'datadog_service_level_objective optional fields' do
     it 'synthesizes description' do
       synth.datadog_service_level_objective(:test, {
-        name: 'SLO', type: 'metric', thresholds: '99.9', description: 'API uptime SLO'
+        name: 'SLO', type: 'metric', thresholds: [{ timeframe: '7d', target: 99.9 }], description: 'API uptime SLO'
       })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_service_level_objective', 'test')
@@ -245,7 +247,7 @@ RSpec.describe 'datadog resource optional attribute synthesis' do
 
     it 'synthesizes groups' do
       synth.datadog_service_level_objective(:test, {
-        name: 'SLO', type: 'metric', thresholds: '99.9', groups: ['env:prod']
+        name: 'SLO', type: 'metric', thresholds: [{ timeframe: '7d', target: 99.9 }], groups: ['env:prod']
       })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_service_level_objective', 'test')
@@ -254,7 +256,7 @@ RSpec.describe 'datadog resource optional attribute synthesis' do
 
     it 'synthesizes monitor_ids' do
       synth.datadog_service_level_objective(:test, {
-        name: 'SLO', type: 'monitor', thresholds: '99.9', monitor_ids: [12345, 67890]
+        name: 'SLO', type: 'monitor', thresholds: [{ timeframe: '7d', target: 99.9 }], monitor_ids: [12345, 67890]
       })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_service_level_objective', 'test')
@@ -263,16 +265,16 @@ RSpec.describe 'datadog resource optional attribute synthesis' do
 
     it 'synthesizes query' do
       synth.datadog_service_level_objective(:test, {
-        name: 'SLO', type: 'metric', thresholds: '99.9', query: 'sum:requests.success{*}'
+        name: 'SLO', type: 'metric', thresholds: [{ timeframe: '7d', target: 99.9 }], query: { numerator: 'sum:requests.success{*}.as_count()', denominator: 'sum:requests.total{*}.as_count()' }
       })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_service_level_objective', 'test')
-      expect(config['query']).to eq('sum:requests.success{*}')
+      expect(config.dig('query', 'numerator')).to include('requests.success')
     end
 
     it 'synthesizes tags' do
       synth.datadog_service_level_objective(:test, {
-        name: 'SLO', type: 'metric', thresholds: '99.9', tags: ['service:api']
+        name: 'SLO', type: 'metric', thresholds: [{ timeframe: '7d', target: 99.9 }], tags: ['service:api']
       })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_service_level_objective', 'test')
@@ -281,7 +283,7 @@ RSpec.describe 'datadog resource optional attribute synthesis' do
 
     it 'synthesizes target_threshold and warning_threshold as floats' do
       synth.datadog_service_level_objective(:test, {
-        name: 'SLO', type: 'metric', thresholds: '99.9',
+        name: 'SLO', type: 'metric', thresholds: [{ timeframe: '7d', target: 99.9 }],
         target_threshold: 99.5, warning_threshold: 99.8
       })
       result = normalize_synthesis(synth.synthesis)
@@ -292,7 +294,7 @@ RSpec.describe 'datadog resource optional attribute synthesis' do
 
     it 'synthesizes timeframe' do
       synth.datadog_service_level_objective(:test, {
-        name: 'SLO', type: 'metric', thresholds: '99.9', timeframe: '30d'
+        name: 'SLO', type: 'metric', thresholds: [{ timeframe: '7d', target: 99.9 }], timeframe: '30d'
       })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_service_level_objective', 'test')
@@ -302,90 +304,92 @@ RSpec.describe 'datadog resource optional attribute synthesis' do
 
   describe 'datadog_logs_index optional fields' do
     it 'synthesizes daily_limit' do
-      synth.datadog_logs_index(:test, { name: 'main', filter: 'source:app', daily_limit: 1000000 })
+      synth.datadog_logs_index(:test, { name: 'main', filter: { query: 'source:app' }, daily_limit: 1000000 })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_logs_index', 'test')
       expect(config['daily_limit']).to eq(1000000)
     end
 
     it 'synthesizes daily_limit_reset' do
-      synth.datadog_logs_index(:test, { name: 'main', filter: 'source:app', daily_limit_reset: '14:00' })
+      synth.datadog_logs_index(:test, { name: 'main', filter: { query: 'source:app' }, daily_limit_reset: { 'reset_time' => '14:00', 'reset_utc_offset' => '+00:00' } })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_logs_index', 'test')
-      expect(config['daily_limit_reset']).to eq('14:00')
+      expect(config['daily_limit_reset']['reset_time']).to eq('14:00')
     end
 
     it 'synthesizes daily_limit_warning_threshold_percentage' do
       synth.datadog_logs_index(:test, {
-        name: 'main', filter: 'source:app', daily_limit_warning_threshold_percentage: 80.0
+        name: 'main', filter: { query: 'source:app' }, daily_limit_warning_threshold_percentage: 80.0
       })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_logs_index', 'test')
       expect(config['daily_limit_warning_threshold_percentage']).to eq(80.0)
     end
 
-    it 'synthesizes exclusion_filters' do
+    it 'synthesizes exclusion_filter' do
       synth.datadog_logs_index(:test, {
-        name: 'main', filter: 'source:app', exclusion_filters: '{"name":"exclude-debug"}'
+        name: 'main', filter: { query: 'source:app' }, exclusion_filter: [{ 'name' => 'exclude-debug', 'is_enabled' => true }]
       })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_logs_index', 'test')
-      expect(config['exclusion_filters']).to include('exclude-debug')
+      expect(config['exclusion_filter'].first['name']).to eq('exclude-debug')
     end
 
     it 'synthesizes disable_daily_limit via map_bool' do
-      synth.datadog_logs_index(:test, { name: 'main', filter: 'source:app', disable_daily_limit: true })
+      synth.datadog_logs_index(:test, { name: 'main', filter: { query: 'source:app' }, disable_daily_limit: true })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_logs_index', 'test')
       expect(config['disable_daily_limit']).to eq(true)
     end
 
     it 'synthesizes disable_daily_limit false via map_bool' do
-      synth.datadog_logs_index(:test, { name: 'main', filter: 'source:app', disable_daily_limit: false })
+      synth.datadog_logs_index(:test, { name: 'main', filter: { query: 'source:app' }, disable_daily_limit: false })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_logs_index', 'test')
       expect(config['disable_daily_limit']).to eq(false)
     end
   end
 
-  describe 'datadog_logs_pipeline optional fields' do
-    it 'synthesizes processors' do
-      synth.datadog_logs_pipeline(:test, {
-        name: 'p', filter: 'source:nginx', processors: '{"type":"grok-parser"}'
+  describe 'datadog_logs_custom_pipeline optional fields' do
+    it 'synthesizes processor' do
+      synth.datadog_logs_custom_pipeline(:test, {
+        name: 'p', filter: [{ 'query' => 'source:nginx' }],
+        processor: [{ 'grok_parser' => { 'name' => 'gp', 'source' => 'message' } }]
       })
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_logs_pipeline', 'test')
-      expect(config['processors']).to include('grok-parser')
+      config = result.dig('resource', 'datadog_logs_custom_pipeline', 'test')
+      expect(config['processor'].first).to have_key('grok_parser')
     end
 
     it 'synthesizes is_enabled true via map_bool' do
-      synth.datadog_logs_pipeline(:test, { name: 'p', filter: 'source:nginx', is_enabled: true })
+      synth.datadog_logs_custom_pipeline(:test, { name: 'p', filter: [{ 'query' => 'source:nginx' }], is_enabled: true })
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_logs_pipeline', 'test')
+      config = result.dig('resource', 'datadog_logs_custom_pipeline', 'test')
       expect(config['is_enabled']).to eq(true)
     end
 
     it 'synthesizes is_enabled false via map_bool' do
-      synth.datadog_logs_pipeline(:test, { name: 'p', filter: 'source:nginx', is_enabled: false })
+      synth.datadog_logs_custom_pipeline(:test, { name: 'p', filter: [{ 'query' => 'source:nginx' }], is_enabled: false })
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_logs_pipeline', 'test')
+      config = result.dig('resource', 'datadog_logs_custom_pipeline', 'test')
       expect(config['is_enabled']).to eq(false)
     end
   end
 
   describe 'datadog_logs_metric optional fields' do
     it 'synthesizes filter' do
-      synth.datadog_logs_metric(:test, { name: 'err', compute: 'count', filter: 'status:error' })
+      synth.datadog_logs_metric(:test, { name: 'err', compute: { aggregation_type: 'count' }, filter: { query: 'status:error' } })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_logs_metric', 'test')
-      expect(config['filter']).to eq('status:error')
+      expect(config.dig('filter', 'query')).to eq('status:error')
     end
 
     it 'synthesizes group_by' do
-      synth.datadog_logs_metric(:test, { name: 'err', compute: 'count', group_by: 'host' })
+      synth.datadog_logs_metric(:test, { name: 'err', compute: { aggregation_type: 'count' }, filter: { query: '*' },
+                                    group_by: [{ 'path' => 'host', 'tag_name' => 'host' }] })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_logs_metric', 'test')
-      expect(config['group_by']).to eq('host')
+      expect(config['group_by'].first['path']).to eq('host')
     end
   end
 
@@ -393,79 +397,87 @@ RSpec.describe 'datadog resource optional attribute synthesis' do
     it 'synthesizes filter' do
       synth.datadog_apm_retention_filter(:test, {
         name: 'f', enabled: true, filter_type: 'spans-errors-sampling-processor',
-        rate: 1.0, filter: 'service:web'
+        rate: '1.0', filter: { query: 'service:web' }
       })
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_apm_retention_filter', 'test')
-      expect(config['filter']).to eq('service:web')
+      expect(config.dig('filter', 'query')).to eq('service:web')
     end
   end
 
-  describe 'datadog_integration_aws optional fields' do
-    it 'synthesizes access_key_id and secret_access_key' do
-      synth.datadog_integration_aws(:test, {
-        account_id: '123456789012',
-        access_key_id: 'AKIAIOSFODNN7EXAMPLE',
-        secret_access_key: 'wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY'
-      })
+  # This block used to target `datadog_integration_aws`, which Datadog REMOVED in
+  # provider v4 along with its whole flat attribute surface (account_id,
+  # access_key_id, excluded_regions, filter_tags, *_collection_enabled). No such
+  # resource is generated in this gem, so every example here failed on an unknown
+  # method rather than on anything it was trying to assert.
+  #
+  # The successor is `datadog_integration_aws_account`, which replaces those flat
+  # booleans and lists with nested config objects (metrics_config, logs_config,
+  # resources_config, traces_config, aws_regions, auth_config). Retargeted rather
+  # than deleted, so the coverage survives.
+  describe 'datadog_integration_aws_account optional fields' do
+    let(:required) { { aws_account_id: '123456789012', aws_partition: 'aws' } }
+
+    it 'synthesizes account_tags' do
+      synth.datadog_integration_aws_account(:test, required.merge(account_tags: ['env:production']))
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_integration_aws', 'test')
-      expect(config['access_key_id']).to eq('AKIAIOSFODNN7EXAMPLE')
-      expect(config['secret_access_key']).to include('EXAMPLEKEY')
+      config = result.dig('resource', 'datadog_integration_aws_account', 'test')
+      expect(config['account_tags']).to eq(['env:production'])
     end
 
-    it 'synthesizes excluded_regions' do
-      synth.datadog_integration_aws(:test, {
-        account_id: '123456789012', excluded_regions: ['us-west-2', 'eu-west-1']
-      })
+    it 'synthesizes auth_config' do
+      synth.datadog_integration_aws_account(
+        :test, required.merge(auth_config: { 'aws_auth_config_role' => { 'role_name' => 'DatadogRole' } })
+      )
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_integration_aws', 'test')
-      expect(config['excluded_regions']).to eq(['us-west-2', 'eu-west-1'])
+      config = result.dig('resource', 'datadog_integration_aws_account', 'test')
+      expect(config.dig('auth_config', 'aws_auth_config_role', 'role_name')).to eq('DatadogRole')
     end
 
-    it 'synthesizes filter_tags' do
-      synth.datadog_integration_aws(:test, {
-        account_id: '123456789012', filter_tags: ['env:production']
-      })
+    it 'synthesizes aws_regions' do
+      synth.datadog_integration_aws_account(
+        :test, required.merge(aws_regions: { 'include_only' => ['us-east-1', 'eu-west-1'] })
+      )
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_integration_aws', 'test')
-      expect(config['filter_tags']).to eq(['env:production'])
+      config = result.dig('resource', 'datadog_integration_aws_account', 'test')
+      expect(config.dig('aws_regions', 'include_only')).to eq(['us-east-1', 'eu-west-1'])
     end
 
-    it 'synthesizes account_specific_namespace_rules' do
-      synth.datadog_integration_aws(:test, {
-        account_id: '123456789012', account_specific_namespace_rules: '{"auto_scaling":false}'
-      })
+    it 'synthesizes metrics_config' do
+      synth.datadog_integration_aws_account(
+        :test, required.merge(metrics_config: { 'enabled' => true, 'collect_cloudwatch_alarms' => false })
+      )
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_integration_aws', 'test')
-      expect(config['account_specific_namespace_rules']).to include('auto_scaling')
+      config = result.dig('resource', 'datadog_integration_aws_account', 'test')
+      expect(config.dig('metrics_config', 'enabled')).to eq(true)
+      expect(config.dig('metrics_config', 'collect_cloudwatch_alarms')).to eq(false)
     end
 
-    it 'synthesizes cspm_resource_collection_enabled via map_bool' do
-      synth.datadog_integration_aws(:test, {
-        account_id: '123456789012', cspm_resource_collection_enabled: true
-      })
+    it 'synthesizes logs_config' do
+      synth.datadog_integration_aws_account(
+        :test, required.merge(logs_config: { 'lambda_forwarder' => { 'sources' => ['s3'] } })
+      )
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_integration_aws', 'test')
-      expect(config['cspm_resource_collection_enabled']).to eq(true)
+      config = result.dig('resource', 'datadog_integration_aws_account', 'test')
+      expect(config.dig('logs_config', 'lambda_forwarder', 'sources')).to eq(['s3'])
     end
 
-    it 'synthesizes metrics_collection_enabled via map_bool' do
-      synth.datadog_integration_aws(:test, {
-        account_id: '123456789012', metrics_collection_enabled: false
-      })
+    it 'synthesizes resources_config' do
+      synth.datadog_integration_aws_account(
+        :test, required.merge(resources_config: { 'cloud_security_posture_management_collection' => true })
+      )
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_integration_aws', 'test')
-      expect(config['metrics_collection_enabled']).to eq(false)
+      config = result.dig('resource', 'datadog_integration_aws_account', 'test')
+      expect(config.dig('resources_config', 'cloud_security_posture_management_collection')).to eq(true)
     end
 
-    it 'synthesizes resource_collection_enabled via map_bool' do
-      synth.datadog_integration_aws(:test, {
-        account_id: '123456789012', resource_collection_enabled: true
-      })
+    it 'synthesizes traces_config' do
+      synth.datadog_integration_aws_account(
+        :test, required.merge(traces_config: { 'xray_services' => { 'include_all' => true } })
+      )
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_integration_aws', 'test')
-      expect(config['resource_collection_enabled']).to eq(true)
+      config = result.dig('resource', 'datadog_integration_aws_account', 'test')
+      expect(config.dig('traces_config', 'xray_services', 'include_all')).to eq(true)
     end
   end
 end

@@ -5,7 +5,7 @@ PATH
       base64
       dry-struct (~> 1.6)
       dry-types (~> 1.7)
-      terraform-synthesizer (~> 0.0.28)
+      terraform-synthesizer (>= 0.0.28)
 
 PATH
   remote: .

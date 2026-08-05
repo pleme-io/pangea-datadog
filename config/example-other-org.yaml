@@ -1,0 +1,68 @@
+# The generality proof.
+#
+# This config is deliberately unlike config/akeyless.yaml in every dimension the
+# engine could have baked in, and it drives the same code with no Ruby change:
+#
+#   a different site (EU, not US1)
+#   a different credential layout (explicit dir, differently-named key files)
+#   a different ownership convention (an `owner:` tag rather than created_by:)
+#   a different disposition mix (an `ignore` tier, which akeyless does not use)
+#   a different grouping key (`service`, not `integration`)
+#   tag repair ON (akeyless leaves it off, so the defect stays visible)
+#   deduping OFF, so identical dashboards are all kept
+#   no retire patterns at all, so only empty dashboards are dropped
+#   a two-widget archetype on a different grid over non-GCP metrics
+#
+# If the engine ever grows an assumption about one organisation, this file stops
+# working. That is its whole job.
+
+site: datadoghq.eu
+account: example
+
+credentials:
+  dir: /etc/example/datadog
+  api_key_file: dd_api
+  app_key_file: dd_app
+
+provenance:
+  - name: pulumi
+    disposition: frozen
+    match:
+      tag: owner:pulumi
+  - name: legacy-import
+    disposition: ignore
+    match:
+      tag_prefix: "legacy/"
+  - name: adopted
+    disposition: adopt
+    match:
+      default: true
+
+retire:
+  empty_widgets: true
+  duplicate_content: keep_all
+
+grouping:
+  monitors_by_tag: service
+  fallback: unowned
+
+tag_repair:
+  enabled: true
+  strip_list_repr: true
+  strip_separator_space: true
+
+archetypes:
+  - name: rds_pair
+    engine: timeseries_grid
+    group_by: dbinstanceidentifier
+    match:
+      title: "\\A(?<cluster>[\\w-]+) RDS Pair\\z"
+    widgets:
+      - metric: aws.rds.cpuutilization
+        query: cpu
+        legend: horizontal
+        layout: { x: 0, y: 0, width: 12, height: 4 }
+      - metric: aws.rds.freeable_memory
+        query: mem
+        legend: horizontal
+        layout: { x: 0, y: 4, width: 12, height: 4 }

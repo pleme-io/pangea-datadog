@@ -53,10 +53,10 @@ RSpec.describe 'datadog resource unknown attribute rejection' do
     end
   end
 
-  describe 'datadog_logs_pipeline' do
+  describe 'datadog_logs_custom_pipeline' do
     it 'rejects unknown attribute keys' do
       expect {
-        synth.datadog_logs_pipeline(:test, { name: 'p', filter: 'source:nginx', junk: 1 })
+        synth.datadog_logs_custom_pipeline(:test, { name: 'p', filter: [{ 'query' => 'source:nginx' }], junk: 1 })
       }.to raise_error(ArgumentError, /unknown attributes.*junk/)
     end
   end
@@ -80,10 +80,10 @@ RSpec.describe 'datadog resource unknown attribute rejection' do
     end
   end
 
-  describe 'datadog_integration_aws' do
+  describe 'datadog_integration_aws_account' do
     it 'rejects unknown attribute keys' do
       expect {
-        synth.datadog_integration_aws(:test, { account_id: '123', invented: 'y' })
+        synth.datadog_integration_aws_account(:test, { aws_account_id: '123456789012', aws_partition: 'aws', invented: 'y' })
       }.to raise_error(ArgumentError, /unknown attributes.*invented/)
     end
   end

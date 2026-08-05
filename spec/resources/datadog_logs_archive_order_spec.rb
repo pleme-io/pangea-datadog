@@ -8,7 +8,7 @@ require 'spec_helper'
 RSpec.describe Pangea::Resources::DatadogLogsArchiveOrder do
   include Pangea::Testing::SynthesisTestHelpers
 
-  let(:required_attrs) { {} }
+  let(:required_attrs) { { archive_ids: ['archive-1', 'archive-2'] } }
 
   describe ':datadog_logs_archive_order' do
     context 'with required attributes only' do
@@ -46,7 +46,8 @@ RSpec.describe Pangea::Resources::DatadogLogsArchiveOrder do
       it 'excludes computed-only attributes from the resource block' do
         synth = create_synthesizer
         synth.extend(described_class)
-        synth.datadog_logs_archive_order('test', required_attrs)
+        # empty payload: the assertion is that the attribute is ABSENT
+        synth.datadog_logs_archive_order('test', {})
         result = normalize_synthesis(synth.synthesis)
 
         config = validate_resource_structure(result, 'datadog_logs_archive_order', 'test')
@@ -81,7 +82,7 @@ RSpec.describe Pangea::Resources::DatadogLogsArchiveOrder do
       it 'omits archive_ids when not provided' do
         synth = create_synthesizer
         synth.extend(described_class)
-        synth.datadog_logs_archive_order('minimal', required_attrs)
+        synth.datadog_logs_archive_order('minimal', {})
         result = normalize_synthesis(synth.synthesis)
         config = validate_resource_structure(result, 'datadog_logs_archive_order', 'minimal')
         expect(config).not_to have_key('archive_ids')
@@ -128,7 +129,7 @@ RSpec.describe Pangea::Resources::DatadogLogsArchiveOrder do
   it_behaves_like 'a generated pangea resource',
     resource_type: :datadog_logs_archive_order,
     method: :datadog_logs_archive_order,
-    required_attrs: {},
+    required_attrs: { archive_ids: ['archive-1', 'archive-2'] },
     expected_outputs: [:id, :archive_ids],
     sensitive_fields: [],
     immutable_fields: [],

@@ -1,0 +1,193 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+$LOAD_PATH.unshift(File.expand_path('../lib', __dir__))
+
+require 'optparse'
+require 'json'
+require 'pangea/datadog/absorb'
+
+Absorb = Pangea::Datadog::Absorb
+
+options = {
+  config: nil,
+  root: File.join(Dir.pwd, 'estate'),
+  out: File.join(Dir.pwd, 'generated'),
+  account: nil,
+  site: nil,
+  receipt_dir: nil,
+  provider_dir: nil,
+  kinds: nil,
+  per_kind: 1
+}
+
+parser = OptionParser.new do |o|
+  o.banner = <<~TEXT
+    usage: pangea-datadog-absorb <command> [options]
+
+    exit codes: 0 pass, 1 fail (ran fine, answer is no), 2 error (could not answer)
+
+    commands:
+      validate   load the config and report the first error, or ok
+      capture    read the live estate to disk, losslessly
+      classify   report provenance and tier over a capture
+      emit       generate typed Pangea Ruby from a capture
+      verify     prove the generated code state-matches the capture
+      reconcile  record the provider's own normalized body for dashboards that
+                 cannot plan clean from the API payload alone (OPT-IN, read-only)
+      roundtrip  prove terraform plans to "No changes" against the LIVE objects
+                 (read-only: import + plan are GET; never applies)
+
+    The engine carries no organisation's policy. Everything estate-specific
+    lives in --config; without one, absorb makes the minimum judgement.
+
+  TEXT
+  o.on('--config PATH', 'typed YAML config (see config/akeyless.yaml)') { |v| options[:config] = v }
+  o.on('--root DIR', 'capture directory (default ./estate)') { |v| options[:root] = v }
+  o.on('--out DIR', 'generated code directory (default ./generated)') { |v| options[:out] = v }
+  o.on('--account NAME', 'credential dir under ~/.config/datadog (config wins)') { |v| options[:account] = v }
+  o.on('--site SITE', 'datadog site (config wins)') { |v| options[:site] = v }
+  o.on('--receipt-dir DIR', 'write a typed JSON receipt per run (keyway)') { |v| options[:receipt_dir] = v }
+  o.on('--provider-dir DIR', 'terraform provider filesystem mirror (roundtrip)') { |v| options[:provider_dir] = v }
+  o.on('--kinds LIST', 'comma-separated: monitors,dashboards,slos,downtimes') { |v| options[:kinds] = v.split(',').map(&:strip).map(&:to_sym) }
+  o.on('--per-kind N', Integer, 'objects to sample per kind (default 1)') { |v| options[:per_kind] = v }
+  o.on('-h', '--help') { puts o; exit 0 }
+end
+
+command = ARGV.shift
+parser.parse!(ARGV)
+
+# A receipt is a side channel: it records what happened, and a failure to write
+# one must never change the answer the tool already computed.
+def emit_receipt(receipt, dir)
+  path = receipt.write(dir)
+  warn "receipt: #{path}" if path
+rescue StandardError => e
+  warn "receipt could not be written: #{e.message}"
+end
+
+def require_config!(options)
+  return options[:config] if options[:config]
+
+  warn 'error: --config is required for this command'
+  exit 2
+end
+
+case command
+when 'validate'
+  path = require_config!(options)
+  begin
+    cfg = Absorb.config(path)
+    puts JSON.pretty_generate(
+      'config' => path,
+      'ok' => true,
+      'site' => cfg.site,
+      'account' => cfg.account,
+      'provenance' => cfg.provenance_rules.map { |r| "#{r['name']}=#{r['disposition']}" },
+      'archetypes' => cfg.archetypes.map { |a| a['name'] }
+    )
+  rescue Absorb::Config::Error => e
+    warn e.message
+    exit 1
+  end
+
+when 'capture'
+  counts = Absorb.capture(
+    root: options[:root],
+    config_path: options[:config],
+    account: options[:account],
+    site: options[:site],
+    progress: ->(kind, n) { warn("  #{kind}: #{n}") if (n % 25).zero? }
+  )
+  puts JSON.pretty_generate(counts)
+
+when 'classify'
+  puts JSON.pretty_generate(Absorb.classify(root: options[:root], config_path: options[:config]))
+
+when 'emit'
+  imports = Absorb.emit(root: options[:root], out_dir: options[:out], config_path: options[:config])
+  puts "emitted #{imports.size} resources to #{options[:out]}"
+
+when 'verify'
+  begin
+    result  = Absorb.verify(root: options[:root], out_dir: options[:out])
+    receipt = (result.ok? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
+              .call(command: 'verify', target: File.basename(options[:root]),
+                    findings: result.findings)
+  rescue StandardError => e
+    receipt = Absorb::Receipt.error(command: 'verify', target: File.basename(options[:root]),
+                                    message: e.message)
+    warn e.message
+    emit_receipt(receipt, options[:receipt_dir])
+    exit receipt.exit_code
+  end
+  puts result
+  emit_receipt(receipt, options[:receipt_dir])
+  exit receipt.exit_code
+
+when 'reconcile'
+  unless options[:provider_dir]
+    warn 'error: --provider-dir is required (a terraform filesystem mirror holding DataDog/datadog)'
+    exit 2
+  end
+  begin
+    results = Absorb.reconcile(root: options[:root], provider_dir: options[:provider_dir],
+                               config_path: options[:config])
+    tally = results.group_by { |r| r[:status] }.transform_values(&:size)
+    tally.sort.each { |status, n| puts format('  %-14s %d', status, n) }
+    # An :unavailable dashboard is one whose body could not be read at all, so
+    # it stays on the raw projection and will keep drifting. That is a real no,
+    # not an error -- the run itself worked.
+    stuck = results.count { |r| r[:status] == :unavailable }
+    receipt = (stuck.zero? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
+              .call(command: 'reconcile', target: File.basename(options[:root]),
+                    findings: {
+                      'dashboards' => results.size,
+                      'recorded' => tally[:recorded].to_i,
+                      'alreadyClean' => tally[:already_clean].to_i,
+                      'archetype' => tally[:archetype].to_i,
+                      'unavailable' => stuck
+                    })
+  rescue StandardError => e
+    receipt = Absorb::Receipt.error(command: 'reconcile', target: File.basename(options[:root]),
+                                    message: e.message)
+    warn e.message
+  end
+  emit_receipt(receipt, options[:receipt_dir])
+  exit receipt.exit_code
+
+when 'roundtrip'
+  unless options[:provider_dir]
+    warn 'error: --provider-dir is required (a terraform filesystem mirror holding DataDog/datadog)'
+    exit 2
+  end
+  begin
+    outcomes = Absorb.roundtrip(root: options[:root], provider_dir: options[:provider_dir],
+                                config_path: options[:config], kinds: options[:kinds],
+                                per_kind: options[:per_kind])
+    outcomes.each do |o|
+      puts format('  %-11s %-34s %s', o.kind, o.id.to_s[0, 34], o.status)
+      puts "      #{o.detail}" if o.detail
+    end
+    clean = outcomes.count(&:clean?)
+    puts "roundtrip: #{clean}/#{outcomes.size} planned to No changes"
+    receipt = (clean == outcomes.size ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
+              .call(command: 'roundtrip', target: File.basename(options[:root]),
+                    findings: {
+                      'planned' => outcomes.size, 'noChanges' => clean,
+                      'outcomes' => outcomes.map { |o|
+                        { 'kind' => o.kind.to_s, 'id' => o.id.to_s, 'status' => o.status.to_s }
+                      }
+                    })
+  rescue StandardError => e
+    receipt = Absorb::Receipt.error(command: 'roundtrip', target: File.basename(options[:root]),
+                                    message: e.message)
+    warn e.message
+  end
+  emit_receipt(receipt, options[:receipt_dir])
+  exit receipt.exit_code
+
+else
+  puts parser
+  exit 2
+end

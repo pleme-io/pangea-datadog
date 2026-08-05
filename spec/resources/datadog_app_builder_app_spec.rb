@@ -40,7 +40,7 @@ RSpec.describe Pangea::Resources::DatadogAppBuilderApp do
         expect(ref.id).to eq("${datadog_app_builder_app.test.id}")
         expect(ref.action_query_names_to_connection_ids).to eq("${datadog_app_builder_app.test.action_query_names_to_connection_ids}")
         expect(ref.description).to eq("${datadog_app_builder_app.test.description}")
-        expect(ref.name).to eq("${datadog_app_builder_app.test.name}")
+        expect(ref[:name]).to eq("${datadog_app_builder_app.test.name}")
         expect(ref.published).to eq("${datadog_app_builder_app.test.published}")
         expect(ref.root_instance_name).to eq("${datadog_app_builder_app.test.root_instance_name}")
       end

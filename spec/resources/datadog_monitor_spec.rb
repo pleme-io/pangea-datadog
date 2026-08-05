@@ -40,7 +40,7 @@ RSpec.describe Pangea::Resources::DatadogMonitor do
         expect(ref.id).to eq("${datadog_monitor.test.id}")
         expect(ref.evaluation_delay).to eq("${datadog_monitor.test.evaluation_delay}")
         expect(ref.restricted_roles).to eq("${datadog_monitor.test.restricted_roles}")
-        expect(ref.tags).to eq("${datadog_monitor.test.tags}")
+        expect(ref[:tags]).to eq("${datadog_monitor.test.tags}")
       end
     end
 

@@ -42,7 +42,7 @@ RSpec.describe Pangea::Resources::DatadogLogsIndex do
         expect(ref.disable_daily_limit).to eq("${datadog_logs_index.test.disable_daily_limit}")
         expect(ref.flex_retention_days).to eq("${datadog_logs_index.test.flex_retention_days}")
         expect(ref.retention_days).to eq("${datadog_logs_index.test.retention_days}")
-        expect(ref.tags).to eq("${datadog_logs_index.test.tags}")
+        expect(ref[:tags]).to eq("${datadog_logs_index.test.tags}")
       end
     end
 

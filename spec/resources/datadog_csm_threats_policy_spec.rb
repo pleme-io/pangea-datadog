@@ -40,7 +40,7 @@ RSpec.describe Pangea::Resources::DatadogCsmThreatsPolicy do
         expect(ref.id).to eq("${datadog_csm_threats_policy.test.id}")
         expect(ref.description).to eq("${datadog_csm_threats_policy.test.description}")
         expect(ref.enabled).to eq("${datadog_csm_threats_policy.test.enabled}")
-        expect(ref.tags).to eq("${datadog_csm_threats_policy.test.tags}")
+        expect(ref[:tags]).to eq("${datadog_csm_threats_policy.test.tags}")
       end
     end
 

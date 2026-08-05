@@ -38,7 +38,7 @@ RSpec.describe Pangea::Resources::DatadogSecurityMonitoringRule do
         ref = synth.datadog_security_monitoring_rule('test', required_attrs)
 
         expect(ref.id).to eq("${datadog_security_monitoring_rule.test.id}")
-        expect(ref.tags).to eq("${datadog_security_monitoring_rule.test.tags}")
+        expect(ref[:tags]).to eq("${datadog_security_monitoring_rule.test.tags}")
       end
     end
 

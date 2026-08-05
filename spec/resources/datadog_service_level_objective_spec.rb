@@ -38,7 +38,7 @@ RSpec.describe Pangea::Resources::DatadogServiceLevelObjective do
         ref = synth.datadog_service_level_objective('test', required_attrs)
 
         expect(ref.id).to eq("${datadog_service_level_objective.test.id}")
-        expect(ref.tags).to eq("${datadog_service_level_objective.test.tags}")
+        expect(ref[:tags]).to eq("${datadog_service_level_objective.test.tags}")
         expect(ref.target_threshold).to eq("${datadog_service_level_objective.test.target_threshold}")
         expect(ref.timeframe).to eq("${datadog_service_level_objective.test.timeframe}")
         expect(ref.warning_threshold).to eq("${datadog_service_level_objective.test.warning_threshold}")

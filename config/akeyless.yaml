@@ -1,0 +1,77 @@
+site: datadoghq.com
+account: akeyless
+
+credentials:
+  # sops-native. Pangea::Secrets.resolve tries, in order:
+  #   ENV DATADOG_AKEYLESS_API_KEY
+  #   ~/.config/sops-nix/secrets/datadog/akeyless/api-key   (deployed on rebuild)
+  #   sops -d against sops_file
+  # These paths are the same strings the nix profiles declare as
+  # api_key_secret / app_key_secret, so the deployer and the consumer share
+  # one name instead of two that drift.
+  source: sops
+  api_key_secret: datadog/akeyless/api-key
+  app_key_secret: datadog/akeyless/app-key
+
+provenance:
+  - name: terraform
+    disposition: frozen
+    match:
+      tag: created_by:terraform
+  - name: script
+    disposition: adopt
+    match:
+      tag_prefix: "["
+  - name: untagged
+    disposition: adopt
+    match:
+      no_tags: true
+  - name: manual
+    disposition: adopt
+    match:
+      default: true
+
+retire:
+  empty_widgets: true
+  duplicate_content: keep_first
+  title_patterns:
+    - "\\A.+'s (Dashboard|Timeboard|Screenboard)\\b"
+    - "\\b(Mon|Tue|Wed|Thu|Fri|Sat|Sun),\\s+\\w+\\s+\\d{1,2}"
+    # (?i) is load-bearing: these appear as POC, Test, TEMP in real titles.
+    # Dropping it silently keeps 6 throwaway boards, which is how this was
+    # caught -- the emitted count moved from 274 to 280 while every attribute
+    # still matched.
+    - "(?i)\\b(test|poc|temp|tmp|scratch|sandbox|delete\\s*me)\\b"
+
+grouping:
+  monitors_by_tag: integration
+  fallback: unclassified
+
+tag_repair:
+  enabled: false
+  strip_list_repr: true
+  strip_separator_space: true
+
+archetypes:
+  - name: cloud_sql_unified_dbs
+    engine: timeseries_grid
+    group_by: database_id
+    match:
+      title: "\\A(?<tenant>\\w+) (?<env>\\w+) Unified DB's(\\s*\\((?<variant>[^)]+)\\))?\\z"
+    widgets:
+      - metric: gcp.cloudsql.database.cpu.utilization
+        query: query1
+        legend: vertical
+        layout: { x: 0, y: 0, width: 6, height: 5 }
+      - metric: gcp.cloudsql.database.memory.utilization
+        query: query2
+        legend: vertical
+        layout: { x: 6, y: 0, width: 6, height: 5 }
+      - metric: gcp.cloudsql.database.disk.bytes_used
+        query: query3
+        legend: horizontal
+        layout: { x: 0, y: 5, width: 12, height: 3 }
+      - metric: gcp.cloudsql.database.disk.utilization
+        query: query3
+        legend: horizontal
+        layout: { x: 0, y: 8, width: 12, height: 3 }

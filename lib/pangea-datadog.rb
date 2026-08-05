@@ -6,6 +6,13 @@ require 'terraform-synthesizer'
 
 module Pangea; module Resources; module Datadog; module Types; end; end; end; end
 
+# The hand-curated enum vocabulary (MonitorType, DashboardLayoutType,
+# SloTimeframe, ...). It was defined but never required by anything in the gem,
+# so every constant in it was unreachable and 31 specs failed on
+# `uninitialized constant`. Loaded here, before the generated resources, since
+# it is the shared type layer they are meant to draw on.
+require_relative 'pangea/types/datadog_types'
+
 # Datadog resources
 require_relative 'pangea/resources/datadog_action_connection/resource'
 require_relative 'pangea/resources/datadog_agentless_scanning_aws_scan_options/resource'

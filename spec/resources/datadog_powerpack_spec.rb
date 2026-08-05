@@ -8,7 +8,7 @@ require 'spec_helper'
 RSpec.describe Pangea::Resources::DatadogPowerpack do
   include Pangea::Testing::SynthesisTestHelpers
 
-  let(:required_attrs) { {} }
+  let(:required_attrs) { { name: 'test-powerpack' } }
 
   describe ':datadog_powerpack' do
     context 'with required attributes only' do
@@ -126,7 +126,7 @@ RSpec.describe Pangea::Resources::DatadogPowerpack do
       it 'omits name when not provided' do
         synth = create_synthesizer
         synth.extend(described_class)
-        synth.datadog_powerpack('minimal', required_attrs)
+        synth.datadog_powerpack('minimal', { description: 'minimal powerpack' })
         result = normalize_synthesis(synth.synthesis)
         config = validate_resource_structure(result, 'datadog_powerpack', 'minimal')
         expect(config).not_to have_key('name')
@@ -255,7 +255,7 @@ RSpec.describe Pangea::Resources::DatadogPowerpack do
   it_behaves_like 'a generated pangea resource',
     resource_type: :datadog_powerpack,
     method: :datadog_powerpack,
-    required_attrs: {},
+    required_attrs: { name: 'test-powerpack' },
     expected_outputs: [:id],
     sensitive_fields: [],
     immutable_fields: [],

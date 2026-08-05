@@ -38,7 +38,7 @@ RSpec.describe Pangea::Resources::DatadogLogsIndexOrder do
         ref = synth.datadog_logs_index_order('test', required_attrs)
 
         expect(ref.id).to eq("${datadog_logs_index_order.test.id}")
-        expect(ref.name).to eq("${datadog_logs_index_order.test.name}")
+        expect(ref[:name]).to eq("${datadog_logs_index_order.test.name}")
       end
     end
 

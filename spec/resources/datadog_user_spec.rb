@@ -38,7 +38,7 @@ RSpec.describe Pangea::Resources::DatadogUser do
         ref = synth.datadog_user('test', required_attrs)
 
         expect(ref.id).to eq("${datadog_user.test.id}")
-        expect(ref.name).to eq("${datadog_user.test.name}")
+        expect(ref[:name]).to eq("${datadog_user.test.name}")
         expect(ref.roles).to eq("${datadog_user.test.roles}")
         expect(ref.user_invitation_id).to eq("${datadog_user.test.user_invitation_id}")
         expect(ref.verified).to eq("${datadog_user.test.verified}")

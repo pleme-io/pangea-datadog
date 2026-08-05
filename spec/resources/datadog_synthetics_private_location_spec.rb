@@ -41,7 +41,7 @@ RSpec.describe Pangea::Resources::DatadogSyntheticsPrivateLocation do
         expect(ref.config).to eq("${datadog_synthetics_private_location.test.config}")
         expect(ref.description).to eq("${datadog_synthetics_private_location.test.description}")
         expect(ref.restriction_policy_resource_id).to eq("${datadog_synthetics_private_location.test.restriction_policy_resource_id}")
-        expect(ref.tags).to eq("${datadog_synthetics_private_location.test.tags}")
+        expect(ref[:tags]).to eq("${datadog_synthetics_private_location.test.tags}")
       end
     end
 

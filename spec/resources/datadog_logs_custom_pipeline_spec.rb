@@ -38,7 +38,7 @@ RSpec.describe Pangea::Resources::DatadogLogsCustomPipeline do
         ref = synth.datadog_logs_custom_pipeline('test', required_attrs)
 
         expect(ref.id).to eq("${datadog_logs_custom_pipeline.test.id}")
-        expect(ref.tags).to eq("${datadog_logs_custom_pipeline.test.tags}")
+        expect(ref[:tags]).to eq("${datadog_logs_custom_pipeline.test.tags}")
       end
     end
 

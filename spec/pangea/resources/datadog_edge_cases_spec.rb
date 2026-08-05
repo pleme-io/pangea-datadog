@@ -65,22 +65,22 @@ RSpec.describe 'datadog resource edge cases' do
       }.not_to raise_error
     end
 
-    it 'synthesizes integration_aws with empty excluded_regions' do
-      synth.datadog_integration_aws(:test, {
-        account_id: '123456789012', excluded_regions: []
+    it 'synthesizes integration_aws_account with an empty aws_regions include list' do
+      synth.datadog_integration_aws_account(:test, {
+        aws_account_id: '123456789012', aws_partition: 'aws', aws_regions: { 'include_only' => [] }
       })
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_integration_aws', 'test')
-      expect(config['excluded_regions']).to eq([])
+      config = result.dig('resource', 'datadog_integration_aws_account', 'test')
+      expect(config.dig('aws_regions', 'include_only')).to eq([])
     end
 
-    it 'synthesizes integration_aws with empty host_tags' do
-      synth.datadog_integration_aws(:test, {
-        account_id: '123456789012', host_tags: []
+    it 'synthesizes integration_aws_account with empty account_tags' do
+      synth.datadog_integration_aws_account(:test, {
+        aws_account_id: '123456789012', aws_partition: 'aws', account_tags: []
       })
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_integration_aws', 'test')
-      expect(config['host_tags']).to eq([])
+      config = result.dig('resource', 'datadog_integration_aws_account', 'test')
+      expect(config['account_tags']).to eq([])
     end
   end
 
@@ -149,12 +149,12 @@ RSpec.describe 'datadog resource edge cases' do
       synth.datadog_dashboard(:d, { title: 'T', layout_type: 'ordered' })
       synth.datadog_dashboard_json(:dj, { dashboard: '{}' })
       synth.datadog_synthetics_test(:st, { name: 'C', type: 'api', status: 'live', locations: ['aws:us-east-1'] })
-      synth.datadog_service_level_objective(:slo, { name: 'S', type: 'metric', thresholds: '99.9' })
-      synth.datadog_logs_index(:li, { name: 'main', filter: 'source:app' })
-      synth.datadog_logs_pipeline(:lp, { name: 'p', filter: 'source:nginx' })
-      synth.datadog_logs_metric(:lm, { name: 'err', compute: 'count' })
-      synth.datadog_apm_retention_filter(:af, { name: 'f', enabled: true, filter_type: 'spans-errors-sampling-processor', rate: 1.0 })
-      synth.datadog_integration_aws(:aws, { account_id: '123456789012' })
+      synth.datadog_service_level_objective(:slo, { name: 'S', type: 'metric', thresholds: [{ timeframe: '7d', target: 99.9 }] })
+      synth.datadog_logs_index(:li, { name: 'main', filter: { query: 'source:app' } })
+      synth.datadog_logs_custom_pipeline(:lp, { name: 'p', filter: [{ 'query' => 'source:nginx' }] })
+      synth.datadog_logs_metric(:lm, { name: 'err', compute: { aggregation_type: 'count' }, filter: { query: 'status:error' } })
+      synth.datadog_apm_retention_filter(:af, { name: 'f', enabled: true, filter_type: 'spans-errors-sampling-processor', rate: '1.0' })
+      synth.datadog_integration_aws_account(:aws, { aws_account_id: '123456789012', aws_partition: 'aws' })
 
       result = normalize_synthesis(synth.synthesis)
 
@@ -164,10 +164,10 @@ RSpec.describe 'datadog resource edge cases' do
       expect(result.dig('resource', 'datadog_synthetics_test', 'st')).not_to be_nil
       expect(result.dig('resource', 'datadog_service_level_objective', 'slo')).not_to be_nil
       expect(result.dig('resource', 'datadog_logs_index', 'li')).not_to be_nil
-      expect(result.dig('resource', 'datadog_logs_pipeline', 'lp')).not_to be_nil
+      expect(result.dig('resource', 'datadog_logs_custom_pipeline', 'lp')).not_to be_nil
       expect(result.dig('resource', 'datadog_logs_metric', 'lm')).not_to be_nil
       expect(result.dig('resource', 'datadog_apm_retention_filter', 'af')).not_to be_nil
-      expect(result.dig('resource', 'datadog_integration_aws', 'aws')).not_to be_nil
+      expect(result.dig('resource', 'datadog_integration_aws_account', 'aws')).not_to be_nil
 
       resource_types = result['resource'].keys
       expect(resource_types.length).to eq(10)
@@ -180,32 +180,36 @@ RSpec.describe 'datadog resource edge cases' do
         synth.datadog_monitor(:test, {
           name: 123, type: 'metric alert', query: 'avg:cpu{*} > 90', message: 'alert'
         })
-      }.to raise_error(Dry::Struct::Error)
+      }.to raise_error(Dry::Types::ConstraintError)
     end
 
     it 'rejects string where boolean is required for apm_retention_filter' do
       expect {
         synth.datadog_apm_retention_filter(:test, {
-          name: 'f', enabled: 'yes', filter_type: 'spans-errors-sampling-processor', rate: 1.0
+          name: 'f', enabled: 'yes', filter_type: 'spans-errors-sampling-processor', rate: '1.0'
         })
-      }.to raise_error(Dry::Struct::Error)
+      }.to raise_error(Dry::Types::ConstraintError)
     end
 
-    it 'rejects string where float is required for rate' do
+    # rate is a String in the provider (its own example is rate = "1.0"), so a
+    # word is a valid String and nothing raises. Numeric range is Datadog's
+    # concern at apply time, not the type layer's.
+    it 'accepts any string for rate, since the provider types it as a string' do
       expect {
         synth.datadog_apm_retention_filter(:test, {
           name: 'f', enabled: true, filter_type: 'spans-errors-sampling-processor', rate: 'high'
         })
-      }.to raise_error(Dry::Struct::Error)
+      }.not_to raise_error
     end
 
-    it 'rejects string where integer is required' do
+    # priority is likewise a String in the provider, not an integer.
+    it 'accepts any string for priority, since the provider types it as a string' do
       expect {
         synth.datadog_monitor(:test, {
           name: 'x', type: 'metric alert', query: 'avg:cpu{*} > 90', message: 'alert',
           priority: 'high'
         })
-      }.to raise_error(Dry::Struct::Error)
+      }.not_to raise_error
     end
 
     it 'rejects string in array-of-string field' do
@@ -214,7 +218,7 @@ RSpec.describe 'datadog resource edge cases' do
           name: 'x', type: 'metric alert', query: 'avg:cpu{*} > 90', message: 'alert',
           tags: 'env:prod'
         })
-      }.to raise_error(Dry::Struct::Error)
+      }.to raise_error(Dry::Types::ConstraintError)
     end
   end
 end
