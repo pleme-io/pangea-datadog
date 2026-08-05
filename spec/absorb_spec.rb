@@ -240,6 +240,131 @@ RSpec.describe Absorb do
     end
   end
 
+  # The generality claim, PROVEN rather than documented.
+  #
+  # config/example-other-org.yaml carries a header listing every dimension in
+  # which it differs from akeyless.yaml. Until now nothing checked that any of
+  # those differences reached the engine: both configs were loaded, validated,
+  # and never driven. A config file that parses is not a proof of generality.
+  #
+  # This drives ONE capture through BOTH shipped configs and asserts the outputs
+  # differ exactly as each config dictates. If the engine ever bakes in an
+  # assumption about one organisation, a differential test is what notices.
+  describe 'the same capture under both shipped configs' do
+    around { |example| Dir.mktmpdir { |dir| @dir = dir; example.run } }
+
+    def shipped(name)
+      Absorb::Rules.from(Absorb::Config.load(
+                           File.expand_path("../config/#{name}", __dir__)
+                         ))
+    end
+
+    let(:akeyless) { shipped('akeyless.yaml') }
+    let(:other) { shipped('example-other-org.yaml') }
+
+    # tagged for BOTH conventions, so the difference is the config, not the data
+    let(:shared_monitor) do
+      monitor_payload.merge('tags' => ['integration:rabbitmq', 'service:api', 'owner:pulumi'])
+    end
+
+    it 'reads ownership from a different tag convention' do
+      # akeyless matches on created_by:/tag-prefix conventions, so a monitor
+      # tagged only owner:pulumi falls through to its terminal rule and is
+      # adopted. The other org reads that same tag as another writer's mark.
+      expect(akeyless.provenance_of(shared_monitor)).to eq('manual')
+      expect(akeyless.adopt?(shared_monitor)).to be(true)
+
+      expect(other.provenance_of(shared_monitor)).to eq('pulumi')
+      expect(other.frozen?(shared_monitor)).to be(true)
+      expect(other.adopt?(shared_monitor)).to be(false)
+    end
+
+    # `ignore` is a disposition akeyless does not use at all.
+    it 'honours a disposition the other config does not have' do
+      legacy = monitor_payload.merge('tags' => ['legacy/imported'])
+
+      expect(other.provenance_of(legacy)).to eq('legacy-import')
+      expect(other.adopt?(legacy)).to be(false)
+      expect(other.frozen?(legacy)).to be(false)
+    end
+
+    it 'groups monitors by a different tag' do
+      expect(akeyless.group_for(shared_monitor)).to eq('rabbitmq')
+      expect(other.group_for(shared_monitor)).to eq('api')
+    end
+
+    it 'falls back to a different name when the grouping tag is absent' do
+      untagged = { 'tags' => [] }
+
+      expect(akeyless.group_for(untagged)).to eq('unclassified')
+      expect(other.group_for(untagged)).to eq('unowned')
+    end
+
+    # Two different questions, and conflating them would be a real bug.
+    # `repair_tags` is the pure repair, used to MATCH provenance so a corrupted
+    # tag still classifies correctly -- that must happen under either config.
+    # `repair_on_emit?` decides whether the repaired form is what gets written,
+    # and akeyless deliberately leaves it off so the estate defect stays visible
+    # in the generated code rather than being silently tidied away.
+    it 'repairs tags for matching under either config' do
+      broken = ["['integration: rabbitmq'", "'monitors_ver:1']"]
+      repaired = ['integration:rabbitmq', 'monitors_ver:1']
+
+      expect(other.repair_tags(broken)).to eq(repaired)
+      expect(akeyless.repair_tags(broken)).to eq(repaired)
+    end
+
+    it 'writes the repaired form only where the config asks for it' do
+      expect(other.repair_on_emit?).to be(true)
+      expect(akeyless.repair_on_emit?).to be(false)
+    end
+
+    it 'leaves a corrupted tag corrupted in akeyless output, and fixes it in the other' do
+      broken = monitor_payload.merge('id' => 2, 'tags' => ["['integration: rabbitmq'", "'x:1']"])
+      capture = Absorb::Capture.new(File.join(@dir, 'repair'))
+      capture.prepare
+      capture.write(:monitors, '2', broken)
+
+      Absorb::Emit.new(capture: capture, out_dir: File.join(@dir, 'ra'), rules: akeyless).run
+      emitted = File.read(Dir[File.join(@dir, 'ra', 'monitors_*.rb')].first)
+
+      expect(emitted).to include("[\'integration: rabbitmq\'")
+    end
+
+    it 'dedupes identical dashboards only where the config asks for it' do
+      expect(akeyless.dedupe_identical?).to be(true)
+      expect(other.dedupe_identical?).to be(false)
+    end
+
+    it 'retires on title only where patterns are configured' do
+      expect(akeyless.retire_title?('Akeyless GW - POC')).to be(true)
+      expect(other.retire_title?('Akeyless GW - POC')).to be(false)
+    end
+
+    it 'matches a different archetype family' do
+      expect(other.archetype_for('billing RDS Pair')&.name).to eq('rds_pair')
+      expect(akeyless.archetype_for('billing RDS Pair')).to be_nil
+    end
+
+    # The end-to-end difference: the same capture, emitted twice, lands in
+    # differently-named files and adopts a different set.
+    it 'emits a different result from the same capture' do
+      capture = Absorb::Capture.new(File.join(@dir, 'estate'))
+      capture.prepare
+      capture.write(:monitors, '1', shared_monitor.merge('id' => 1))
+
+      a = Absorb::Emit.new(capture: capture, out_dir: File.join(@dir, 'a'), rules: akeyless).run
+      b = Absorb::Emit.new(capture: capture, out_dir: File.join(@dir, 'b'), rules: other).run
+
+      # akeyless adopts it and files it under its integration tag
+      expect(a.keys).to eq(['datadog_monitor.rabbitmq_free_memory_1'])
+      expect(File).to exist(File.join(@dir, 'a', 'monitors_rabbitmq.rb'))
+
+      # the other org treats pulumi as another writer and declares nothing
+      expect(b).to be_empty
+    end
+  end
+
   describe Absorb::Normalize do
     it 'lifts monitor options onto the provider attribute surface' do
       attrs = described_class.monitor(monitor_payload)
