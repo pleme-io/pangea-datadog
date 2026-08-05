@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'json'
+require 'yaml'
 require 'tmpdir'
 require 'pangea/datadog/absorb'
 
@@ -1039,12 +1040,54 @@ RSpec.describe Absorb do
       Absorb::Emit.new(capture: cap, out_dir: out, rules: archetyped).run
 
       plain = JSON.parse(File.read(File.join(out, 'shards', 'dashboards.imports.json')))
-      arch  = JSON.parse(File.read(File.join(out, 'shards', 'dashboards_archetype.imports.json')))
+      arch  = JSON.parse(File.read(File.join(out, 'shards', 'dashboards-archetype.imports.json')))
 
       expect(plain.keys).to all(satisfy { |a| !arch.key?(a) })
       expect(arch.size).to eq(1)
       expect(File.read(File.join(out, 'shards', 'dashboards.rb')))
         .not_to include('absorb/engines')
+    end
+
+    # A shard name becomes part of an InfrastructureTemplate CR name, so the
+    # chart's schema requires an RFC 1123 DNS label. `dashboards_archetype`
+    # failed that outright while the other seven passed -- a mismatch that only
+    # showed up when the two artifacts were actually put together.
+    it 'names every shard as a DNS label the chart will accept' do
+      _imports, out = emit_all
+      names = Dir[File.join(out, 'shards', '*.imports.json')]
+              .map { |f| File.basename(f, '.imports.json') }
+
+      expect(names).to all(match(/\A[a-z0-9]([-a-z0-9]*[a-z0-9])?\z/))
+    end
+
+    it 'refuses to emit a shard name the chart would reject' do
+      emitter = Absorb::Emit.new(capture: Absorb::Capture.new(File.join(@dir, 'x')),
+                                 out_dir: File.join(@dir, 'y'), rules: rules)
+      emitter.instance_variable_set(:@shards, { 'bad_name' => { files: [], modules: [] } })
+
+      expect { emitter.send(:write_shards, {}) }.to raise_error(/not a DNS label/)
+    end
+
+    # The chart renders nothing without shards[].importHints, and a missing hint
+    # is a silent duplicate of a live object rather than an error. Emit knows
+    # the partition, so hand-assembly is the one mistake worth designing out.
+    it 'emits a values file carrying every hint, partitioned by shard' do
+      imports, out = emit_all
+      values = YAML.safe_load(File.read(File.join(out, 'values.yaml')))
+      hints = values.fetch('shards').flat_map { |s| s.fetch('importHints').keys }
+
+      expect(hints.sort).to eq(imports.keys.sort)
+      expect(values['shards'].map { |s| s['name'] }).to all(match(/\A[a-z0-9-]+\z/))
+    end
+
+    # The chart FAILS when credentials.secretName is unset, deliberately. A
+    # generated placeholder would turn that refusal into a silent default and
+    # send every RPC to the pod's ambient credential chain.
+    it 'leaves the credential name out of the generated values' do
+      _imports, out = emit_all
+      values = YAML.safe_load(File.read(File.join(out, 'values.yaml')))
+
+      expect(values).not_to have_key('credentials')
     end
 
     it 'gives each shard a template of its own name' do
