@@ -33,6 +33,8 @@ parser = OptionParser.new do |o|
       classify   report provenance and tier over a capture
       emit       generate typed Pangea Ruby from a capture
       verify     prove the generated code state-matches the capture
+      gate       emit + verify in one step, one receipt, exit 0/1/2
+                 (OFFLINE: reads the capture, never calls Datadog)
       reconcile  record the provider's own post-import body for objects that
                  cannot plan clean from the API payload alone -- dashboards by
                  default, --kinds powerpacks for powerpacks (OPT-IN, read-only)
@@ -45,7 +47,10 @@ parser = OptionParser.new do |o|
   TEXT
   o.on('--config PATH', 'typed YAML config (see config/akeyless.yaml)') { |v| options[:config] = v }
   o.on('--root DIR', 'capture directory (default ./estate)') { |v| options[:root] = v }
-  o.on('--out DIR', 'generated code directory (default ./generated)') { |v| options[:out] = v }
+  o.on('--out DIR', 'generated code directory (default ./generated; gate defaults to a temp dir)') do |v|
+    options[:out] = v
+    options[:out_given] = v
+  end
   o.on('--account NAME', 'credential dir under ~/.config/datadog (config wins)') { |v| options[:account] = v }
   o.on('--site SITE', 'datadog site (config wins)') { |v| options[:site] = v }
   o.on('--receipt-dir DIR', 'write a typed JSON receipt per run (keyway)') { |v| options[:receipt_dir] = v }
@@ -118,6 +123,22 @@ when 'verify'
                     findings: result.findings)
   rescue StandardError => e
     receipt = Absorb::Receipt.error(command: 'verify', target: File.basename(options[:root]),
+                                    message: e.message)
+    warn e.message
+    emit_receipt(receipt, options[:receipt_dir])
+    exit receipt.exit_code
+  end
+  puts result
+  emit_receipt(receipt, options[:receipt_dir])
+  exit receipt.exit_code
+
+when 'gate'
+  begin
+    result  = Absorb.gate(root: options[:root], config_path: options[:config], out_dir: options[:out_given])
+    receipt = (result.ok? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
+              .call(command: 'gate', target: File.basename(options[:root]), findings: result.findings)
+  rescue StandardError => e
+    receipt = Absorb::Receipt.error(command: 'gate', target: File.basename(options[:root]),
                                     message: e.message)
     warn e.message
     emit_receipt(receipt, options[:receipt_dir])

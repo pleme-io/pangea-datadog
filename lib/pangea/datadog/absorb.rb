@@ -1,5 +1,7 @@
 # frozen_string_literal: true
 
+require 'tmpdir'
+
 require_relative 'absorb/client'
 require_relative 'absorb/capture'
 require_relative 'absorb/normalize'
@@ -87,6 +89,39 @@ module Pangea
                            rules: cfg ? Rules.from(cfg) : Rules.none)
         rt.reconcile(credentials: creds, only_failing: only_failing,
                      kinds: kinds || [:dashboards])
+      end
+
+      # The regression oracle as ONE call: emit from the capture, then prove the
+      # emitted code says what the capture says.
+      #
+      # OFFLINE BY CONSTRUCTION. It reads a capture off disk and touches no
+      # Datadog API, so it is safe to run in CI, on a laptop, or anywhere the
+      # credentials are not. Everything that talks to Datadog is a different
+      # verb, deliberately.
+      #
+      # Emits to a TEMPORARY directory unless told otherwise. A run that emits
+      # over the previous output and then fails leaves a half-written tree that
+      # the next run would happily verify against -- the gate would be checking
+      # its own debris.
+      GateError = Class.new(StandardError)
+
+      def gate(root:, config_path: nil, out_dir: nil)
+        # A gate that passes on an absent or empty capture is a gate that passes
+        # when the capture step silently failed -- the exact false green this
+        # whole project exists to prevent. Nothing to check is "could not
+        # answer" (exit 2), never "the answer is yes" (exit 0).
+        capture = Capture.new(root)
+        raise GateError, "no capture at #{root}" unless capture.exist?
+        raise GateError, "capture at #{root} holds no objects" if capture.empty?
+
+        return gate_in(root, config_path, out_dir) if out_dir
+
+        Dir.mktmpdir('absorb-gate-') { |dir| gate_in(root, config_path, dir) }
+      end
+
+      def gate_in(root, config_path, dir)
+        emit(root: root, out_dir: dir, config_path: config_path)
+        verify(root: root, out_dir: dir)
       end
 
       def verify(root:, out_dir:)

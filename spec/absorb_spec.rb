@@ -746,6 +746,94 @@ RSpec.describe Absorb do
     end
   end
 
+  # The oracle as one command. Three hand-run steps whose result had to be read
+  # off stdout are not a gate anybody else can run.
+  describe 'the gate verb' do
+    around { |example| Dir.mktmpdir { |dir| @dir = dir; example.run } }
+
+    def build_capture
+      cap = Absorb::Capture.new(File.join(@dir, 'estate'))
+      cap.prepare
+      cap.write(:monitors, '123', monitor_payload)
+      cap.write(:dashboards, 'abc-def-ghi', dashboard_payload)
+      cap
+    end
+
+    it 'emits and verifies in one call' do
+      build_capture
+      result = Absorb.gate(root: File.join(@dir, 'estate'))
+
+      expect(result).to be_ok
+      expect(result.checked).to eq(2)
+    end
+
+    # A gate that leaves its output behind is a gate that can verify its own
+    # debris on the next run.
+    it 'leaves nothing behind when it emits to a temp directory' do
+      build_capture
+      before = Dir.children(@dir).sort
+      Absorb.gate(root: File.join(@dir, 'estate'))
+
+      expect(Dir.children(@dir).sort).to eq(before)
+    end
+
+    it 'keeps the output when an explicit directory is asked for' do
+      build_capture
+      out = File.join(@dir, 'kept')
+      Absorb.gate(root: File.join(@dir, 'estate'), out_dir: out)
+
+      expect(File).to exist(File.join(out, 'imports.json'))
+    end
+
+    # The whole point. A stale sidecar is the drift the gate exists to catch,
+    # and it must survive the emit-fresh-every-time design -- emit and verify
+    # both read the same capture, so only a real inconsistency inside that
+    # capture can fail it.
+    it 'fails when the capture contains a stale sidecar' do
+      cap = build_capture
+      cap.write_normalized(:dashboards, 'abc-def-ghi',
+                           { 'title' => 'Something Else', 'widgets' => [] })
+
+      result = Absorb.gate(root: File.join(@dir, 'estate'))
+
+      expect(result).not_to be_ok
+      expect(result.diffs.map { |d| d[:attribute] }.join).to include('stale sidecar')
+    end
+
+    # The worst failure a gate can have. An absent capture makes emit produce
+    # nothing, verify check nothing, and the whole thing report PASS -- so a CI
+    # run whose capture step silently failed would go green. Nothing to check is
+    # "could not answer", never "the answer is yes".
+    it 'refuses an absent capture rather than passing on nothing' do
+      expect { Absorb.gate(root: File.join(@dir, 'nope')) }
+        .to raise_error(Absorb::GateError, /no capture/)
+    end
+
+    it 'refuses a capture directory that holds no objects' do
+      empty = File.join(@dir, 'empty')
+      Absorb::Capture.new(empty).prepare
+
+      expect { Absorb.gate(root: empty) }
+        .to raise_error(Absorb::GateError, /holds no objects/)
+    end
+
+    it 'does not mistake a capture holding only one kind for an empty one' do
+      cap = Absorb::Capture.new(File.join(@dir, 'onekind'))
+      cap.prepare
+      cap.write(:logs_metrics, 'm', { 'id' => 'm', 'attributes' => {} })
+
+      expect(cap).not_to be_empty
+    end
+
+    it 'reports the same numbers to the receipt that it prints' do
+      build_capture
+      result = Absorb.gate(root: File.join(@dir, 'estate'))
+
+      expect(result.findings['checked']).to eq(2)
+      expect(result.findings['diffs']).to eq(0)
+    end
+  end
+
   # A reconciled object has a hole in the gate: emit ships the sidecar AND
   # verify derives its expectation from the sidecar, so the two agree by
   # construction. The failure that hides is STALENESS, and these invariants are

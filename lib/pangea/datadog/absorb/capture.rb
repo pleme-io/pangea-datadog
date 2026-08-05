@@ -111,6 +111,15 @@ module Pangea
           counts
         end
 
+        # Every kind that could hold objects. `empty?` asks whether the capture
+        # holds ANY of them, which is what tells a gate that it has nothing to
+        # check versus nothing to say.
+        def empty?
+          DEFAULT_KINDS.none? { |kind| Dir.exist?(dir(kind)) && !ids(kind).empty? }
+        end
+
+        def exist? = Dir.exist?(root)
+
         def prepare
           FileUtils.mkdir_p(root)
         end
