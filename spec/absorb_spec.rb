@@ -768,6 +768,42 @@ RSpec.describe Absorb do
         expect(File.read(f)).to eq(File.read(f.sub(first, second)))
       end
     end
+
+    # The generated tree is COMMITTED to the delivery workspace, so `git diff`
+    # is the drift detector. Any instability -- a hash order, a timestamp, an
+    # unsorted glob -- turns every regeneration into a spurious diff and the
+    # detector stops meaning anything.
+    #
+    # The narrower check above predates shards and sidecars and looks only at
+    # .rb files. This spans every kind, includes a reconciled sidecar, and
+    # compares EVERY emitted file including imports.json and the per-shard
+    # slices.
+    it 'is byte-identical across every emitted file, not just the ruby' do
+      capture = Absorb::Capture.new(File.join(@dir, 'wide'))
+      capture.prepare
+      capture.write(:monitors, '123', monitor_payload)
+      capture.write(:dashboards, 'abc-def-ghi', dashboard_payload)
+      capture.write_normalized(:dashboards, 'abc-def-ghi', dashboard_payload)
+      capture.write(:slos, 's1', { 'id' => 's1', 'name' => 'S', 'type' => 'metric',
+                                   'thresholds' => [{ 'timeframe' => '7d', 'target' => 99 }] })
+      capture.write(:teams, 't1', { 'id' => 't1', 'attributes' => { 'name' => 'T', 'handle' => 't' } })
+      capture.write(:logs_metrics, 'm1', { 'id' => 'm1', 'attributes' => {
+                      'filter' => { 'query' => 'q' }, 'compute' => { 'aggregation_type' => 'count' }
+                    } })
+      capture.write(:powerpacks, 'p1', { 'id' => 'p1', 'attributes' => { 'name' => 'P' } })
+      capture.write_normalized(:powerpacks, 'p1', { 'name' => 'P', 'layout' => [{ 'x' => 0 }] })
+
+      a = File.join(@dir, 'wide-a')
+      b = File.join(@dir, 'wide-b')
+      Absorb::Emit.new(capture: capture, out_dir: a, rules: rules).run
+      Absorb::Emit.new(capture: capture, out_dir: b, rules: rules).run
+
+      files = Dir.glob(File.join(a, '**', '*')).select { |f| File.file?(f) }
+      expect(files.size).to be > 8
+      files.each do |file|
+        expect(File.read(file)).to eq(File.read(file.sub(a, b))), "#{File.basename(file)} differs"
+      end
+    end
   end
 
   # The logs configuration layer: 12 pipelines, 8 metrics, 1 index in the
