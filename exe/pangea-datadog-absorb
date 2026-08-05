@@ -146,6 +146,7 @@ when 'reconcile'
                     findings: {
                       'dashboards' => results.size,
                       'recorded' => tally[:recorded].to_i,
+                      'refreshed' => tally[:refreshed].to_i,
                       'alreadyClean' => tally[:already_clean].to_i,
                       'archetype' => tally[:archetype].to_i,
                       'unavailable' => stuck

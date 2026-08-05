@@ -833,6 +833,57 @@ RSpec.describe Absorb do
       end
     end
 
+    # Detection without repair leaves the operator stuck: verify says "stale"
+    # and nothing can clear it except a hand-edit. reconcile closes that loop.
+    describe 'repair' do
+      around { |example| Dir.mktmpdir { |dir| @dir = dir; example.run } }
+
+      def roundtrip_for(cap)
+        Absorb::Roundtrip.new(capture: cap, provider_dir: '/x', rules: rules)
+      end
+
+      def capture_with(sidecar)
+        cap = Absorb::Capture.new(File.join(@dir, 'estate'))
+        cap.prepare
+        cap.write(:dashboards, 'abc-def-ghi', dashboard_payload)
+        cap.write_normalized(:dashboards, 'abc-def-ghi', sidecar)
+        cap
+      end
+
+      # The critical case. A stale body can still plan clean -- if the live
+      # object drifted and drifted back, or if the drift is in a field the plan
+      # tolerates -- so trusting the pre-check would leave the stale sidecar in
+      # place forever.
+      it 'refreshes a stale sidecar even when the stale body plans clean' do
+        cap = capture_with({ 'title' => 'Something Else', 'widgets' => [] })
+        rt = roundtrip_for(cap)
+        allow(rt).to receive(:plan_one).and_return(
+          Absorb::Roundtrip::Outcome.new(kind: :dashboards, id: 'abc-def-ghi',
+                                         name: 'n', status: :no_changes)
+        )
+        allow(rt).to receive(:provider_body).and_return({ 'title' => 'Production Overview' })
+
+        result = rt.reconcile(credentials: { api_key: 'k', app_key: 'a' }, kinds: [:dashboards])
+
+        expect(result.map { |r| r[:status] }).to eq([:refreshed])
+        expect(cap.normalized(:dashboards, 'abc-def-ghi')['title']).to eq('Production Overview')
+      end
+
+      it 'leaves a good sidecar alone when it already plans clean' do
+        cap = capture_with(dashboard_payload)
+        rt = roundtrip_for(cap)
+        allow(rt).to receive(:plan_one).and_return(
+          Absorb::Roundtrip::Outcome.new(kind: :dashboards, id: 'abc-def-ghi',
+                                         name: 'n', status: :no_changes)
+        )
+        expect(rt).not_to receive(:provider_body)
+
+        result = rt.reconcile(credentials: { api_key: 'k', app_key: 'a' }, kinds: [:dashboards])
+
+        expect(result.map { |r| r[:status] }).to eq([:already_clean])
+      end
+    end
+
     # A gate that cannot fail is worth nothing, so this drives it end to end:
     # emit from a sidecar, then age the CAPTURE underneath it.
     describe 'end to end' do

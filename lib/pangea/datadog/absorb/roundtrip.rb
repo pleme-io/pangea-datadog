@@ -67,11 +67,13 @@ module Pangea
         RECONCILABLE = {
           dashboards: {
             seed: -> { { 'dashboard' => '{}' } },
-            extract: ->(attrs) { attrs['dashboard'].nil? ? nil : JSON.parse(attrs['dashboard']) }
+            extract: ->(attrs) { attrs['dashboard'].nil? ? nil : JSON.parse(attrs['dashboard']) },
+            fidelity_kind: 'datadog_dashboard_json'
           },
           powerpacks: {
             seed: -> { { 'name' => 'probe' } },
             extract: ->(attrs) { Normalize.prune_provider_state(attrs) },
+            fidelity_kind: 'datadog_powerpack',
             # A powerpack has no body at all until one is recorded, so the
             # "is it already clean?" pre-check cannot run on the first pass --
             # it would need the very thing this is about to produce.
@@ -182,7 +184,16 @@ module Pangea
               next { kind: kind, id: id, status: :archetype } if tier == Classify::TIER_ARCHETYPE
             end
 
-            skip_precheck = recipe[:sidecar_only] && !capture.normalized?(spec[:capture], id)
+            # A sidecar that no longer describes the captured object is the one
+            # case where the plan pre-check must NOT be trusted: it would plan
+            # the stale body against the live object, and a stale body can still
+            # plan clean if the live object drifted back. Detection lives in
+            # verify; this is the repair.
+            sidecar = capture.normalized(spec[:capture], id)
+            stale = !Normalize.sidecar_fidelity(recipe[:fidelity_kind],
+                                                capture.read(spec[:capture], id), sidecar).empty?
+
+            skip_precheck = stale || (recipe[:sidecar_only] && sidecar.nil?)
             if only_failing && !skip_precheck && plan_one(kind, spec, id, credentials).clean?
               next { kind: kind, id: id, status: :already_clean }
             end
@@ -191,7 +202,7 @@ module Pangea
             next { kind: kind, id: id, status: :unavailable } if body.nil?
 
             capture.write_normalized(spec[:capture], id, body)
-            { kind: kind, id: id, status: :recorded }
+            { kind: kind, id: id, status: stale ? :refreshed : :recorded }
           end.compact
         end
 
