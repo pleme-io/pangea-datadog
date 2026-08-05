@@ -772,6 +772,58 @@ RSpec.describe Absorb do
     end
   end
 
+  # The delivery chart renders one InfrastructureTemplate per shard, each
+  # carrying only ITS slice of the import hints. A shard that declares more
+  # resources than it can import would plan a CREATE for the remainder, and
+  # Datadog has no uniqueness constraint to turn that into a visible error --
+  # it is a silent duplicate of a live object.
+  describe 'shard entry points' do
+    around { |example| Dir.mktmpdir { |dir| @dir = dir; example.run } }
+
+    def emit_all
+      cap = Absorb::Capture.new(File.join(@dir, 'estate'))
+      cap.prepare
+      cap.write(:monitors, '123', monitor_payload)
+      cap.write(:dashboards, 'abc-def-ghi', dashboard_payload)
+      cap.write(:teams, 't1', { 'id' => 't1', 'attributes' => { 'name' => 'Infra', 'handle' => 'i' } })
+      out = File.join(@dir, 'generated')
+      [Absorb::Emit.new(capture: cap, out_dir: out, rules: rules).run, out]
+    end
+
+    it 'writes an entry point and an import slice per shard' do
+      _imports, out = emit_all
+
+      expect(File).to exist(File.join(out, 'shards', 'monitors.rb'))
+      expect(File).to exist(File.join(out, 'shards', 'monitors.imports.json'))
+    end
+
+    # The invariant the whole shard design rests on.
+    it 'partitions every address into exactly one shard' do
+      imports, out = emit_all
+      slices = Dir[File.join(out, 'shards', '*.imports.json')].map { |f| JSON.parse(File.read(f)) }
+      addresses = slices.flat_map(&:keys)
+
+      expect(addresses.sort).to eq(imports.keys.sort)
+      expect(addresses.tally.select { |_, n| n > 1 }).to be_empty
+    end
+
+    it 'gives each shard a template of its own name' do
+      _imports, out = emit_all
+
+      expect(File.read(File.join(out, 'shards', 'monitors.rb')))
+        .to include('template :akeyless_datadog_monitors do')
+    end
+
+    # verify must not load them: they are entry points, not declarations, and
+    # loading one would both fail and double-count what it re-declares.
+    it 'keeps the entry points out of the oracle' do
+      _imports, out = emit_all
+
+      expect(Absorb::Verify.new(capture: Absorb::Capture.new(File.join(@dir, 'estate')),
+                                out_dir: out).run).to be_ok
+    end
+  end
+
   # The oracle as one command. Three hand-run steps whose result had to be read
   # off stdout are not a gate anybody else can run.
   describe 'the gate verb' do

@@ -193,7 +193,13 @@ module Pangea
           ::Pangea.send(:remove_const, :Absorbed) if ::Pangea.const_defined?(:Absorbed, false)
 
           synth = RecordingSynth.new
-          Dir.glob(File.join(out_dir, '**', '*.rb')).sort.each { |file| load(file) }
+          # shards/ holds ENTRY POINTS, not resource declarations: each is a
+          # `template ... do` block for one InfrastructureTemplate, and loading
+          # one here would both fail (no template DSL) and double-count every
+          # resource it re-declares.
+          Dir.glob(File.join(out_dir, '**', '*.rb'))
+             .reject { |f| File.basename(File.dirname(f)) == 'shards' }
+             .sort.each { |file| load(file) }
           each_built_module { |mod| mod.build(synth) }
           synth.recorded
         end

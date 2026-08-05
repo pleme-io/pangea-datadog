@@ -67,31 +67,119 @@ module Pangea
           imports = {}
           imports.merge!(emit_monitors)
           imports.merge!(emit_dashboards)
-          imports.merge!(emit_simple(:slos, :datadog_service_level_objective, 'slos') { |p| Normalize.slo(p) })
-          imports.merge!(emit_simple(:downtimes, :datadog_downtime, 'downtimes') { |p| Normalize.downtime(p) })
+          imports.merge!(emit_simple(:slos, :datadog_service_level_objective, 'slos', shard: 'slos') { |p| Normalize.slo(p) })
+          imports.merge!(emit_simple(:downtimes, :datadog_downtime, 'downtimes', shard: 'downtimes') { |p| Normalize.downtime(p) })
           imports.merge!(emit_logs_pipelines)
-          imports.merge!(emit_simple(:logs_metrics, :datadog_logs_metric, 'logs_metrics') do |p|
+          imports.merge!(emit_simple(:logs_metrics, :datadog_logs_metric, 'logs_metrics', shard: 'logs') do |p|
             Normalize.logs_metric(p)
           end)
-          imports.merge!(emit_simple(:logs_indexes, :datadog_logs_index, 'logs_indexes') do |p|
+          imports.merge!(emit_simple(:logs_indexes, :datadog_logs_index, 'logs_indexes', shard: 'logs') do |p|
             Normalize.logs_index(p)
           end)
-          imports.merge!(emit_simple(:teams, :datadog_team, 'teams') { |p| Normalize.team(p) })
+          imports.merge!(emit_simple(:teams, :datadog_team, 'teams', shard: 'account') { |p| Normalize.team(p) })
           imports.merge!(emit_roles)
-          imports.merge!(emit_simple(:rum_applications, :datadog_rum_application, 'rum_applications') do |p|
+          imports.merge!(emit_simple(:rum_applications, :datadog_rum_application, 'rum_applications', shard: 'account') do |p|
             Normalize.rum_application(p)
           end)
           imports.merge!(emit_simple(:apm_retention_filters, :datadog_apm_retention_filter,
-                                     'apm_retention_filters',
+                                     'apm_retention_filters', shard: 'account',
                                      only: ->(p) { Normalize.apm_retention_filter_adoptable?(p) }) do |p|
             Normalize.apm_retention_filter(p)
           end)
-          imports.merge!(emit_simple(:dashboard_lists, :datadog_dashboard_list, 'dashboard_lists') do |p|
+          imports.merge!(emit_simple(:dashboard_lists, :datadog_dashboard_list, 'dashboard_lists', shard: 'account') do |p|
             Normalize.dashboard_list(p)
           end)
           imports.merge!(emit_powerpacks)
           File.write(File.join(out_dir, 'imports.json'), "#{JSON.pretty_generate(imports)}\n")
+          write_shards(imports)
           imports
+        end
+
+        # One entry point per shard, because the delivery chart renders one
+        # InfrastructureTemplate per shard and each CR carries only ITS slice of
+        # the import hints.
+        #
+        # If every shard pointed at one file declaring all 340 resources, each CR
+        # would synthesize all of them while holding hints for a fraction -- and
+        # plan a CREATE for the rest. Datadog has no uniqueness constraint, so
+        # those creates are silent duplicates of live objects. A shard must
+        # therefore declare EXACTLY the resources it can import.
+        #
+        # The partition is checked here rather than trusted: every emitted
+        # address belongs to exactly one shard, or this raises.
+        def write_shards(imports)
+          shards = @shards || {}
+          return {} if shards.empty?
+
+          assigned = shards.values.flat_map { |s| s[:modules] }
+          duplicated = assigned.tally.select { |_, n| n > 1 }.keys
+          raise "modules in more than one shard: #{duplicated.join(', ')}" unless duplicated.empty?
+
+          slices = shard_imports(imports, shards)
+          missing = imports.keys - slices.values.flat_map(&:keys)
+          raise "addresses in no shard: #{missing.first(5).join(', ')}" unless missing.empty?
+
+          FileUtils.mkdir_p(File.join(out_dir, 'shards'))
+          shards.each_key { |shard| write_shard(shard, shards[shard], slices.fetch(shard)) }
+          slices
+        end
+
+        # Which shard owns an address, by resource type. This mirrors exactly how
+        # the emitter assigned shards above; keeping it as one declared table
+        # rather than reverse-engineering it from the generated files means the
+        # two cannot quietly disagree.
+        ADDRESS_SHARDS = {
+          'datadog_monitor' => 'monitors',
+          'datadog_dashboard_json' => 'dashboards',
+          'datadog_service_level_objective' => 'slos',
+          'datadog_downtime' => 'downtimes',
+          'datadog_logs_custom_pipeline' => 'logs',
+          'datadog_logs_integration_pipeline' => 'logs',
+          'datadog_logs_metric' => 'logs',
+          'datadog_logs_index' => 'logs',
+          'datadog_team' => 'account',
+          'datadog_role' => 'account',
+          'datadog_rum_application' => 'account',
+          'datadog_apm_retention_filter' => 'account',
+          'datadog_dashboard_list' => 'account',
+          'datadog_powerpack' => 'powerpacks'
+        }.freeze
+
+        def shard_imports(imports, shards)
+          slices = shards.keys.to_h { |shard| [shard, {}] }
+          imports.each do |address, id|
+            type = address.split('.', 2).first
+            shard = ADDRESS_SHARDS[type]
+            raise "no shard declared for #{type}" if shard.nil?
+            raise "shard #{shard} has no emitted files" unless slices.key?(shard)
+
+            slices[shard][address] = id
+          end
+          slices
+        end
+
+        def write_shard(shard, parts, slice)
+          loads = parts[:files].sort.map { |f| "    load File.join(__dir__, '..', '#{f}.rb')" }
+          builds = parts[:modules].sort.map do |m|
+            "    Pangea::Absorbed.const_get(:#{m}).build(self)"
+          end
+          File.write(File.join(out_dir, 'shards', "#{shard}.rb"), <<~RUBY)
+            #{HEADER}
+            require 'pangea-datadog'
+
+            template :akeyless_datadog_#{shard} do
+              provider :datadog,
+                       api_key: ENV.fetch('DD_API_KEY', ''),
+                       app_key: ENV.fetch('DD_APP_KEY', ''),
+                       api_url: "https://api.\#{ENV.fetch('DD_SITE', 'datadoghq.com')}/"
+
+            #{loads.join("\n")}
+
+            #{builds.join("\n")}
+            end
+          RUBY
+          File.write(File.join(out_dir, 'shards', "#{shard}.imports.json"),
+                     "#{JSON.pretty_generate(slice)}\n")
         end
 
         def emit_monitors
@@ -128,7 +216,7 @@ module Pangea
           end
 
           groups.each do |group, entries|
-            write_template("monitors_#{group}", entries.sort_by(&:first)) do |slug, attrs|
+            write_template("monitors_#{group}", entries.sort_by(&:first), shard: 'monitors') do |slug, attrs|
               render_resource(:datadog_monitor, slug, attrs)
             end
           end
@@ -154,7 +242,7 @@ module Pangea
           end
           return imports if entries.empty?
 
-          write_template('powerpacks', entries.sort_by(&:first)) do |slug, attrs|
+          write_template('powerpacks', entries.sort_by(&:first), shard: 'powerpacks') do |slug, attrs|
             render_resource(:datadog_powerpack, slug, attrs)
           end
           imports
@@ -178,7 +266,7 @@ module Pangea
           end
           return imports if entries.empty?
 
-          write_template('roles', entries.sort_by(&:first)) do |slug, attrs|
+          write_template('roles', entries.sort_by(&:first), shard: 'account') do |slug, attrs|
             render_resource(:datadog_role, slug, attrs)
           end
           imports
@@ -206,12 +294,12 @@ module Pangea
           end
 
           unless custom.empty?
-            write_template('logs_pipelines', custom.sort_by(&:first)) do |slug, attrs|
+            write_template('logs_pipelines', custom.sort_by(&:first), shard: 'logs') do |slug, attrs|
               render_resource(:datadog_logs_custom_pipeline, slug, attrs)
             end
           end
           unless integration.empty?
-            write_template('logs_integration_pipelines', integration.sort_by(&:first)) do |slug, attrs|
+            write_template('logs_integration_pipelines', integration.sort_by(&:first), shard: 'logs') do |slug, attrs|
               render_resource(:datadog_logs_integration_pipeline, slug, attrs)
             end
           end
@@ -222,7 +310,7 @@ module Pangea
         # SLOs and downtimes need none of the monitor/dashboard machinery: no
         # provenance split, no tiering, no archetypes. One file, one resource per
         # captured object, named off the object's own name.
-        def emit_simple(kind, resource, file, only: nil)
+        def emit_simple(kind, resource, file, only: nil, shard: nil)
           imports = {}
           entries = []
 
@@ -236,7 +324,7 @@ module Pangea
           end
           return imports if entries.empty?
 
-          write_template(file, entries.sort_by(&:first)) do |slug, attrs|
+          write_template(file, entries.sort_by(&:first), shard: shard) do |slug, attrs|
             render_resource(resource, slug, attrs)
           end
           imports
@@ -262,7 +350,7 @@ module Pangea
               write_archetype(slug, payload)
             else
               body = Normalize.dashboard_json_for(payload, capture.normalized(:dashboards, id))
-              write_template(File.join('dashboards', slug), [[slug, body]]) do |name, a|
+              write_template(File.join('dashboards', slug), [[slug, body]], shard: 'dashboards') do |name, a|
                 render_resource(:datadog_dashboard_json, name, a)
               end
             end
@@ -279,7 +367,7 @@ module Pangea
           derived = derive_archetype_params(arch, payload)
 
           write_template(File.join('dashboards_archetype', slug), [[slug, derived]],
-                         requires: [engine_require(arch.engine)]) do |name, params|
+                         requires: [engine_require(arch.engine)], shard: 'dashboards') do |name, params|
             <<~RUBY
               Pangea::Datadog::Absorb::Engines::#{engine_const(arch.engine)}.build(
                 synth,
@@ -346,7 +434,7 @@ module Pangea
         # Two group names that camelize to one module would have the second file
         # reopen the first and replace its build method, silently dropping every
         # resource in one of them. That happened once, so it is now an error.
-        def write_template(name, entries, requires: [])
+        def write_template(name, entries, requires: [], shard: nil)
           module_name = camelize(File.basename(name))
           @modules ||= {}
           if (taken = @modules[module_name]) && taken != name
@@ -354,6 +442,11 @@ module Pangea
           end
 
           @modules[module_name] = name
+          if shard
+            @shards ||= Hash.new { |h, k| h[k] = { files: [], modules: [] } }
+            @shards[shard][:files] << name
+            @shards[shard][:modules] << module_name
+          end
           body = entries.map { |slug, attrs| yield(slug, attrs) }.join("\n")
           path = File.join(out_dir, "#{name}.rb")
           FileUtils.mkdir_p(File.dirname(path))
