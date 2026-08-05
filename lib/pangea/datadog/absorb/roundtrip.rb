@@ -116,16 +116,46 @@ module Pangea
           'Provider registry.terraform.io/datadog/datadog was not found'
         ).freeze
 
+        # terraform reads a filesystem mirror at an EXACT depth:
+        #   <root>/<hostname>/<namespace>/<type>/<version>
+        # so the check has to be exact too. It used to glob `**`, which made it
+        # agree that a provider was present while terraform could not see it --
+        # the nix store path for the provider matches recursively but its mirror
+        # root is three levels down, under libexec/terraform-providers. The run
+        # then failed at init with
+        #
+        #   provider registry.terraform.io/datadog/datadog: required by this
+        #   configuration but no version is selected
+        #
+        # which reads as a lockfile problem and is really a wrong --provider-dir.
+        MIRROR_DEPTH = File.join('*', 'DataDog', 'datadog', '*')
+        NESTED_DEPTH = File.join('**', 'DataDog', 'datadog', '*')
+
         def provider_available?
-          Dir.exist?(provider_dir) &&
-            !Dir.glob(File.join(provider_dir, '**', 'DataDog', 'datadog', '*')).empty?
+          Dir.exist?(provider_dir) && !Dir.glob(File.join(provider_dir, MIRROR_DEPTH)).empty?
+        end
+
+        # The real mirror root, when the caller passed one of its parents. Naming
+        # it turns a confusing init failure into the answer.
+        def nested_mirror_root
+          Dir.glob(File.join(provider_dir, NESTED_DEPTH))
+             .map { |path| File.dirname(File.dirname(File.dirname(File.dirname(path)))) }
+             .uniq.first
+        end
+
+        def unavailable_message
+          nested = nested_mirror_root
+          return "did you mean --provider-dir #{nested}" if nested
+
+          'A nix store path is not a GC root; realise it with --out-link.'
         end
 
         # Sample `per_kind` objects of each kind and plan each one.
         def run(kinds: KINDS.keys, per_kind: 1, credentials:)
           unless provider_available?
-            raise Error, "no DataDog provider under #{provider_dir} -- nothing could be planned. " \
-                         'A nix store path is not a GC root; realise it with --out-link.'
+            raise Error, "no DataDog provider mirror at #{provider_dir} -- nothing could be " \
+                         "planned. terraform reads <root>/<hostname>/DataDog/datadog/<version>. " \
+                         "#{unavailable_message}"
           end
 
           kinds.flat_map do |kind|

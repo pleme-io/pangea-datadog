@@ -621,6 +621,29 @@ RSpec.describe Absorb do
           .to raise_error(Absorb::Roundtrip::Error, /no DataDog provider/)
       end
 
+      # The nix store path for the provider holds its mirror THREE levels down,
+      # under libexec/terraform-providers. A recursive check called that
+      # present; terraform, which reads the mirror root at an exact depth, saw
+      # nothing and failed at init with "no version is selected" -- a message
+      # that reads as a lockfile problem and is really a wrong --provider-dir.
+      it 'refuses a parent of the mirror root, and names the real one' do
+        root = File.join(@dir, 'store-path')
+        mirror = File.join(root, 'libexec', 'terraform-providers')
+        FileUtils.mkdir_p(File.join(mirror, 'registry.terraform.io', 'DataDog', 'datadog', '4.10.0'))
+        rt = described_class.new(capture: capture_with, provider_dir: root, rules: rules)
+
+        expect { rt.run(per_kind: 1, credentials: { api_key: 'k', app_key: 'a' }) }
+          .to raise_error(Absorb::Roundtrip::Error, /did you mean --provider-dir #{Regexp.escape(mirror)}/)
+      end
+
+      it 'accepts the mirror root itself' do
+        mirror = File.join(@dir, 'mirror')
+        FileUtils.mkdir_p(File.join(mirror, 'registry.terraform.io', 'DataDog', 'datadog', '4.10.0'))
+        rt = described_class.new(capture: capture_with, provider_dir: mirror, rules: rules)
+
+        expect(rt.send(:provider_available?)).to be(true)
+      end
+
       # Mid-run loss: the pre-flight passed, then the provider vanished.
       it 'separates a vanished provider from a genuine import failure' do
         gone = 'Error: could not read package directory: open .terraform/providers/' \
