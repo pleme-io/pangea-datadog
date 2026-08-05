@@ -203,7 +203,8 @@ when 'census'
 
 when 'gate'
   begin
-    result  = Absorb.gate(root: options[:root], config_path: options[:config], out_dir: options[:out_given])
+    result  = Absorb.gate(root: options[:root], config_path: options[:config],
+                          out_dir: options[:out_given], schema_path: options[:provider_schema])
     receipt = (result.ok? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
               .call(command: 'gate', target: File.basename(options[:root]), findings: result.findings)
   rescue StandardError => e

@@ -2024,6 +2024,53 @@ RSpec.describe Absorb do
       expect(result.checked).to eq(2)
     end
 
+    # conform existed as its own verb and nothing ran it. A check that has to
+    # be remembered is a check that stops happening.
+    it 'runs conform as part of the gate when given a provider schema' do
+      build_capture
+      schema = File.join(@dir, 'schema.json')
+      File.write(schema, JSON.generate({
+                                         'provider_schemas' => {
+                                           'registry.terraform.io/datadog/datadog' => {
+                                             'resource_schemas' => { 'datadog_monitor' => {
+                                               'block' => { 'attributes' => {} }
+                                             } }
+                                           }
+                                         }
+                                       }))
+
+      result = Absorb.gate(root: File.join(@dir, 'estate'), schema_path: schema)
+
+      expect(result).not_to be_ok
+      expect(result.findings['conformRan']).to be(true)
+      expect(result.to_s).to include('UNDECLARED datadog_monitor')
+    end
+
+    # The schema is a build artifact this repo does not carry, so the gate
+    # cannot require one. But it must not pass quietly either -- a reader would
+    # assume conform ran.
+    it 'says conform did not run rather than passing silently' do
+      build_capture
+      result = Absorb.gate(root: File.join(@dir, 'estate'))
+
+      expect(result.findings['conformRan']).to be(false)
+      expect(result.findings['conform']).to be_nil
+      expect(result.to_s).to include('CONFORM not run')
+    end
+
+    it 'still fails the gate on a verify diff even when conform is clean' do
+      build_capture
+      schema = File.join(@dir, 'schema.json')
+      File.write(schema, JSON.generate({ 'provider_schemas' => {
+                                         'x' => { 'resource_schemas' => {} }
+                                       } }))
+
+      result = Absorb.gate(root: File.join(@dir, 'estate'), schema_path: schema)
+
+      expect(result.findings['conformRan']).to be(true)
+      expect(result.checked).to eq(2)
+    end
+
     # A gate that leaves its output behind is a gate that can verify its own
     # debris on the next run.
     it 'leaves nothing behind when it emits to a temp directory' do

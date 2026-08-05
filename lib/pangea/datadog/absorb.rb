@@ -1,5 +1,6 @@
 # frozen_string_literal: true
 
+require 'forwardable'
 require 'tmpdir'
 
 require_relative 'absorb/client'
@@ -94,6 +95,44 @@ module Pangea
                      kinds: kinds || [:dashboards])
       end
 
+      GateError = Class.new(StandardError)
+
+      # gate is emit + verify, and now + conform when a provider schema is
+      # available.
+      #
+      # conform existed as its own verb for a day and nothing ran it. A check
+      # that has to be remembered is a check that stops happening, which is the
+      # same defect as a CI job that evaluates a flake and never runs the suite.
+      # The gate is what people actually invoke, so the gate is where it belongs.
+      #
+      # It is OPTIONAL because the schema is a build artifact this repo does not
+      # carry, and making the documented oracle depend on one would break it for
+      # everyone who has not produced one. But absence is REPORTED, never
+      # silent: without a schema the gate says conform did not run, rather than
+      # passing and letting the reader assume it did.
+      GateResult = Struct.new(:verify_result, :conform_result, keyword_init: true) do
+        extend Forwardable
+        def_delegators :verify_result, :checked, :matched, :diffs, :unmapped, :unmanageable, :uncovered
+
+        def ok? = verify_result.ok? && (conform_result.nil? || conform_result.ok?)
+
+        def findings
+          verify_result.findings.merge('conformRan' => !conform_result.nil?,
+                                       'conform' => conform_result&.findings)
+        end
+
+        def to_s
+          [verify_result.to_s, conform_line].join("\n")
+        end
+
+        def conform_line
+          return conform_result.to_s if conform_result
+
+          '  CONFORM not run -- no provider schema given, so nothing checked the emitted ' \
+            'code against the provider. Pass --provider-schema.'
+        end
+      end
+
       # The regression oracle as ONE call: emit from the capture, then prove the
       # emitted code says what the capture says.
       #
@@ -106,9 +145,7 @@ module Pangea
       # over the previous output and then fails leaves a half-written tree that
       # the next run would happily verify against -- the gate would be checking
       # its own debris.
-      GateError = Class.new(StandardError)
-
-      def gate(root:, config_path: nil, out_dir: nil)
+      def gate(root:, config_path: nil, out_dir: nil, schema_path: nil)
         # A gate that passes on an absent or empty capture is a gate that passes
         # when the capture step silently failed -- the exact false green this
         # whole project exists to prevent. Nothing to check is "could not
@@ -117,28 +154,29 @@ module Pangea
         raise GateError, "no capture at #{root}" unless capture.exist?
         raise GateError, "capture at #{root} holds no objects" if capture.empty?
 
-        return gate_in(root, config_path, out_dir) if out_dir
+        return gate_in(root, config_path, out_dir, schema_path) if out_dir
 
-        Dir.mktmpdir('absorb-gate-') { |dir| gate_in(root, config_path, dir) }
+        Dir.mktmpdir('absorb-gate-') { |dir| gate_in(root, config_path, dir, schema_path) }
       end
 
-      def gate_in(root, config_path, dir)
+      def gate_in(root, config_path, dir, schema_path)
         emit(root: root, out_dir: dir, config_path: config_path)
-        verify(root: root, out_dir: dir)
+        GateResult.new(
+          verify_result: verify(root: root, out_dir: dir),
+          conform_result: schema_path ? conform(root: root, schema_path: schema_path,
+                                                config_path: config_path) : nil
+        )
       end
 
-      # A correctness audit of the captured estate. Read-only and OFFLINE --
-      # computed from a capture already on disk, no API call, nothing to
-      # approve. See Audit for why a broken monitor and a silent one are
-      # counted differently.
-      # Read-only and counts only -- see Census for why it must never persist
-      # what it reads.
-      # Offline: no credentials, no provider binary, seconds not an hour.
+      # Offline: no credentials, no provider binary, seconds not an hour. See
+      # Conform for what it catches and, more importantly, what it cannot.
       def conform(root:, schema_path:, config_path: nil)
         Conform.run(capture: Capture.new(root), schema_path: schema_path,
                     rules: config_path ? Config.load(config_path) : nil)
       end
 
+      # Read-only and counts only -- see Census for why it must never persist
+      # what it reads.
       def census(config_path: nil, account: nil, site: nil, provider_schema: nil)
         cfg = config_path ? Config.load(config_path) : nil
         client =
@@ -151,6 +189,10 @@ module Pangea
         Census.run(client: client, covered: Emit::ADDRESS_SHARDS.keys.size, declared: declared)
       end
 
+      # A correctness audit of the captured estate. Read-only and OFFLINE --
+      # computed from a capture already on disk, no API call, nothing to
+      # approve. See Audit for why a broken monitor and a silent one are
+      # counted differently.
       def audit(root:)
         Audit.run(Capture.new(root))
       end
