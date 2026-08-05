@@ -1384,6 +1384,82 @@ RSpec.describe Absorb do
     end
   end
 
+  # classify is the verb someone runs FIRST to see what adoption touches, and it
+  # reported only monitors and dashboards while the estate held nine captured
+  # kinds. That understated the scope and hid the deliberate exclusions -- the
+  # part an approver most needs to see, because a skip nobody can see reads as
+  # an oversight.
+  describe 'the classify accounting' do
+    around { |example| Dir.mktmpdir { |dir| @dir = dir; example.run } }
+
+    def wide_capture
+      cap = Absorb::Capture.new(File.join(@dir, 'estate'))
+      cap.prepare
+      cap.write(:monitors, '123', monitor_payload)
+      cap.write(:monitors, '999', monitor_payload.merge('id' => 999,
+                                                        'tags' => ['created_by:terraform']))
+      cap.write(:dashboards, 'abc-def-ghi', dashboard_payload)
+      cap.write(:slos, 's1', { 'id' => 's1', 'name' => 'S', 'type' => 'metric',
+                               'thresholds' => [{ 'timeframe' => '7d', 'target' => 99 }] })
+      cap.write(:teams, 't1', { 'id' => 't1', 'attributes' => { 'name' => 'T', 'handle' => 't' } })
+      cap.write(:roles, 'r1', { 'id' => 'r1', 'attributes' => { 'name' => 'Managed', 'managed' => true } })
+      cap.write(:roles, 'r2', { 'id' => 'r2', 'attributes' => { 'name' => 'Ours' } })
+      cap.write(:logs_pipelines, 'p1', { 'id' => 'p1', 'name' => 'Custom', 'is_read_only' => false,
+                                         'filter' => { 'query' => '' }, 'processors' => [] })
+      cap.write(:logs_pipelines, 'p2', { 'id' => 'p2', 'name' => 'Nginx', 'is_read_only' => true,
+                                         'filter' => { 'query' => '' }, 'processors' => [] })
+      cap
+    end
+
+    it 'accounts for kinds beyond monitors and dashboards' do
+      wide_capture
+      report = Absorb.classify(root: File.join(@dir, 'estate'))
+
+      expect(report[:other_kinds].keys).to include(:slos, :teams, :roles, :logs_pipelines)
+    end
+
+    it 'shows WHY something is skipped, not just that it was' do
+      wide_capture
+      other = Absorb.classify(root: File.join(@dir, 'estate'))[:other_kinds]
+
+      expect(other[:roles]).to eq({ captured: 2, emitted: 1, skipped_datadog_managed: 1 })
+      expect(other[:logs_pipelines])
+        .to eq({ captured: 2, emitted: 2, custom: 1, datadog_integration: 1 })
+    end
+
+    it 'says nothing about a kind the capture does not hold' do
+      wide_capture
+      other = Absorb.classify(root: File.join(@dir, 'estate'))[:other_kinds]
+
+      expect(other).not_to have_key(:powerpacks)
+      expect(other).not_to have_key(:downtimes)
+    end
+
+    # THE INVARIANT. The accounting must equal what emit actually produces, or
+    # it is a story about the estate rather than a report on it.
+    #
+    # Both sides must read the SAME config: classify with no rules calls every
+    # monitor unclassified-and-adoptable, while emit with rules freezes the
+    # terraform-owned one. That is not a defect in either -- it is one question
+    # asked two ways, and the first version of this spec asked it two ways.
+    it 'reconciles exactly with what emit declares' do
+      capture = wide_capture
+      config_path = File.join(@dir, 'rules.yaml')
+      File.write(config_path, YAML.dump(config_hash))
+      shared = Absorb::Rules.from(Absorb::Config.load(config_path))
+
+      imports = Absorb::Emit.new(capture: capture, out_dir: File.join(@dir, 'g'), rules: shared).run
+      report = Absorb.classify(root: File.join(@dir, 'estate'), config_path: config_path)
+
+      adoptable_monitors = report[:monitors].reject { |name, _| name == 'terraform' }.values.sum
+      dashboards = report[:dashboards].reject { |tier, _| tier == Absorb::Classify::TIER_RETIRE }
+                                      .values.sum
+      others = report[:other_kinds].values.sum { |v| v[:emitted] }
+
+      expect(adoptable_monitors + dashboards + others).to eq(imports.size)
+    end
+  end
+
   # The oracle as one command. Three hand-run steps whose result had to be read
   # off stdout are not a gate anybody else can run.
   describe 'the gate verb' do

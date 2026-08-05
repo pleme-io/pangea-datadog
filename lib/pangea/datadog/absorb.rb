@@ -176,8 +176,84 @@ module Pangea
           monitors: monitors,
           monitors_with_corrupted_tags: corrupted,
           dashboards: dashboards,
-          archetype_families: families
+          archetype_families: families,
+          other_kinds: other_kinds(capture)
         }
+      end
+
+      # Everything captured beyond monitors and dashboards, with WHY anything is
+      # left out.
+      #
+      # classify is the verb someone runs first to see what adoption touches,
+      # and it reported only two of the nine captured kinds -- so it understated
+      # the scope and, worse, hid the deliberate exclusions, which are the part
+      # an approver most needs to see. A skip that nobody can see reads as an
+      # oversight.
+      def other_kinds(capture)
+        {
+          slos: simple_count(capture, :slos),
+          downtimes: simple_count(capture, :downtimes),
+          logs_pipelines: pipeline_split(capture),
+          logs_metrics: simple_count(capture, :logs_metrics),
+          logs_indexes: simple_count(capture, :logs_indexes),
+          teams: simple_count(capture, :teams),
+          roles: role_split(capture),
+          rum_applications: simple_count(capture, :rum_applications),
+          apm_retention_filters: apm_split(capture),
+          dashboard_lists: simple_count(capture, :dashboard_lists),
+          powerpacks: powerpack_split(capture)
+        }.reject { |_, value| value.nil? }
+      end
+
+      def simple_count(capture, kind)
+        count = capture.ids(kind).size
+        count.zero? ? nil : { captured: count, emitted: count }
+      end
+
+      # One endpoint, two resources: a read-only pipeline is Datadog's own and
+      # becomes an integration pipeline carrying nothing but its on/off switch.
+      def pipeline_split(capture)
+        ids = capture.ids(:logs_pipelines)
+        return nil if ids.empty?
+
+        read_only = ids.count { |id| Normalize.logs_pipeline_read_only?(capture.read(:logs_pipelines, id)) }
+        { captured: ids.size, emitted: ids.size,
+          custom: ids.size - read_only, datadog_integration: read_only }
+      end
+
+      # Datadog ships Admin / Standard / Read Only into every account and the
+      # provider models them not at all, so they are not adoptable.
+      def role_split(capture)
+        ids = capture.ids(:roles)
+        return nil if ids.empty?
+
+        managed = ids.count { |id| Normalize.role_managed?(capture.read(:roles, id)) }
+        { captured: ids.size, emitted: ids.size - managed,
+          skipped_datadog_managed: managed }
+      end
+
+      # The provider accepts one filter_type and rejects the rest at validate,
+      # so a default filter cannot be emitted as anything.
+      def apm_split(capture)
+        ids = capture.ids(:apm_retention_filters)
+        return nil if ids.empty?
+
+        adoptable = ids.count do |id|
+          Normalize.apm_retention_filter_adoptable?(capture.read(:apm_retention_filters, id))
+        end
+        { captured: ids.size, emitted: adoptable,
+          skipped_unsupported_filter_type: ids.size - adoptable }
+      end
+
+      # A powerpack has no emittable body until `reconcile` records the
+      # provider's own post-import state, so an unreconciled one is skipped.
+      def powerpack_split(capture)
+        ids = capture.ids(:powerpacks)
+        return nil if ids.empty?
+
+        reconciled = ids.count { |id| capture.normalized?(:powerpacks, id) }
+        { captured: ids.size, emitted: reconciled,
+          skipped_awaiting_reconcile: ids.size - reconciled }
       end
     end
   end
