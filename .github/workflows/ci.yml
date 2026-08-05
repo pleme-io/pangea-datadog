@@ -1,3 +1,72 @@
+# CI for pangea-datadog.
+#
+# TWO JOBS, AND THEY PROVE DIFFERENT THINGS. Keeping them separate is the
+# whole point of this file.
+#
+#   check  `nix flake check` -- an EVALUATION check and nothing more.
+#   spec   the rspec suite, actually executed.
+#
+# ── why `check` alone was never test coverage ──────────────────────────────
+#
+# `nix flake check` builds `checks.<system>.*` and nothing else. substrate's
+# `lib/build/ruby/gem-flake.nix` returns `{ devShells, apps }` -- it emits no
+# `checks` output at all -- so on a gem flake the command evaluates the
+# outputs, prints `(build skipped)`, and exits 0.
+#
+# Measured on this repo (2026-08-05, aarch64-darwin). Every check that ran was
+# an `isValidApp`:
+#
+#   running flake check 'apps.aarch64-darwin.test.isValidApp'...
+#   ✅ apps.aarch64-darwin.test
+#   ✅ devShells.aarch64-darwin.default (build skipped)
+#   exit 0
+#
+# `apps.test` runs `bundle exec rspec`, and the check confirms it IS a valid
+# app -- that the program path exists. It never runs it. So `check` exits 0
+# whether the suite passes, fails, or cannot load, which is the failure mode
+# this repo keeps finding elsewhere: a green that was never evidence.
+# substrate's gem-ci.yml header documents the same thing (corrected
+# 2026-08-02); this file is the other half, the job that actually runs them.
+#
+# ── why `spec` needs two checkouts ────────────────────────────────────────
+#
+# The Gemfile resolves pangea-core by PATH (`path: "../pangea-core"`), the
+# convention across every pangea-* gem. A single-checkout runner has no
+# sibling directory, so bundler cannot resolve it and the suite cannot run at
+# all. Hence the second checkout, placed beside this one under
+# $GITHUB_WORKSPACE so `../pangea-core` resolves exactly as it does locally.
+#
+# Substituting the PUBLISHED pangea-core instead is not an option, and the
+# reason is worth stating because the version number actively hides it:
+# published pangea-core 0.3.0 and the pangea-core in this workspace are
+# DIFFERENT CODE UNDER THE SAME VERSION (the org auto-bumps on merge, so main
+# accumulates unreleased commits while still declaring the last published
+# number). Measured against the published gem: 3043 examples, 7 failures --
+# datadog_integration_aws_external_id, datadog_logs_archive_order and
+# datadog_logs_integration_pipeline, all of which need core's empty-block fix.
+# No version constraint can express "not that 0.3.0", so the path checkout is
+# the only honest resolution.
+#
+# ── BOT_PAT is required, not optional ─────────────────────────────────────
+#
+# pleme-io/pangea-core is private. `actions/checkout` with the auto-provided
+# GITHUB_TOKEN is scoped to the RUNNING repo, so it cannot read it and fails
+# the job. This differs from the `check` job below, which needs no token
+# because every flake input here (substrate, forge, ruby-nix) is public.
+#
+# ── EXPECT THIS JOB TO BE RED ON ARRIVAL ──────────────────────────────────
+#
+# Verified 2026-08-05 by cloning both repos fresh into a sibling layout and
+# running the exact command below:
+#
+#   pangea-core @ absorb/resource-builder-empty-blocks   3043 examples, 0 failures
+#   pangea-core @ main                                   3043 examples, 7 failures
+#
+# The job checks out `main`, so it reports 7 failures until core's
+# empty-block fix merges. That is accurate signal, not a broken workflow --
+# this gem genuinely does not pass against any pangea-core that exists on
+# main or on rubygems today, and `check` has been reporting green over it.
+
 name: ci
 
 on: [push, pull_request]
@@ -5,3 +74,22 @@ on: [push, pull_request]
 jobs:
   check:
     uses: pleme-io/substrate/.github/workflows/gem-ci.yml@main
+
+  spec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: pangea-datadog
+
+      - uses: actions/checkout@v4
+        with:
+          repository: pleme-io/pangea-core
+          ref: main
+          path: pangea-core
+          token: ${{ secrets.BOT_PAT }}
+
+      - uses: DeterminateSystems/nix-installer-action@main
+
+      - run: nix develop --command bundle exec rspec --format progress
+        working-directory: pangea-datadog
