@@ -98,8 +98,36 @@ module Pangea
           @rules        = rules
         end
 
+        # A provider that is missing, or that vanishes mid-run, makes every
+        # import fail -- and counting those as "not clean" turns a harness
+        # failure into a false regression across the whole estate. It happened:
+        # a sweep reported 155/340 after the provider's nix store path was
+        # garbage-collected under it.
+        #
+        # The tell is the failure MODE. A real body defect shows up as a plan
+        # that DIVERGES; it can never show up as an import that cannot start.
+        # Regexp.union of plain strings, NOT an /x pattern: extended mode strips
+        # whitespace INSIDE the literals too, so `no version is selected` would
+        # compile as `noversionisselected` and match nothing. The spec caught it.
+        PROVIDER_UNAVAILABLE = Regexp.union(
+          'no version is selected',
+          'could not read package directory',
+          'Failed to install provider',
+          'Provider registry.terraform.io/datadog/datadog was not found'
+        ).freeze
+
+        def provider_available?
+          Dir.exist?(provider_dir) &&
+            !Dir.glob(File.join(provider_dir, '**', 'DataDog', 'datadog', '*')).empty?
+        end
+
         # Sample `per_kind` objects of each kind and plan each one.
         def run(kinds: KINDS.keys, per_kind: 1, credentials:)
+          unless provider_available?
+            raise Error, "no DataDog provider under #{provider_dir} -- nothing could be planned. " \
+                         'A nix store path is not a GC root; realise it with --out-link.'
+          end
+
           kinds.flat_map do |kind|
             spec = KINDS.fetch(kind) { raise Error, "unknown kind #{kind}" }
             adoptable(kind, spec).first(per_kind).map do |id|
@@ -149,7 +177,11 @@ module Pangea
             imported = run_tf(dir, env, 'import', '-no-color', '-input=false',
                               "#{spec[:resource]}.probe", id.to_s)
             unless imported[:ok]
-              return Outcome.new(kind: kind, id: id, name: name, status: :import_failed,
+              # Distinct from :import_failed. "the provider is gone" is not an
+              # answer about this object, and must not be counted as one.
+              status = imported[:err].to_s.match?(PROVIDER_UNAVAILABLE) ? :provider_unavailable
+                                                                       : :import_failed
+              return Outcome.new(kind: kind, id: id, name: name, status: status,
                                  detail: tail(imported[:err]))
             end
 

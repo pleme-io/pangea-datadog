@@ -595,6 +595,49 @@ RSpec.describe Absorb do
 
     def roundtrip(cap) = described_class.new(capture: cap, provider_dir: '/x', rules: rules)
 
+    # A sweep once reported 155/340 after the provider's nix store path was
+    # garbage-collected mid-run. Every import after that point failed, and the
+    # rate counted them as "not clean" -- presenting a harness failure as a
+    # false regression across the whole estate.
+    #
+    # The tell is the failure MODE, not the count: a real body defect shows up
+    # as a plan that DIVERGES, never as an import that cannot start.
+    describe 'when the provider is unavailable' do
+      it 'refuses to start rather than producing numbers' do
+        rt = described_class.new(capture: capture_with, provider_dir: File.join(@dir, 'nope'),
+                                 rules: rules)
+
+        expect { rt.run(per_kind: 1, credentials: { api_key: 'k', app_key: 'a' }) }
+          .to raise_error(Absorb::Roundtrip::Error, /no DataDog provider/)
+      end
+
+      it 'refuses a directory that exists but holds no datadog provider' do
+        empty = File.join(@dir, 'empty-mirror')
+        FileUtils.mkdir_p(empty)
+        rt = described_class.new(capture: capture_with, provider_dir: empty, rules: rules)
+
+        expect { rt.run(per_kind: 1, credentials: { api_key: 'k', app_key: 'a' }) }
+          .to raise_error(Absorb::Roundtrip::Error, /no DataDog provider/)
+      end
+
+      # Mid-run loss: the pre-flight passed, then the provider vanished.
+      it 'separates a vanished provider from a genuine import failure' do
+        gone = 'Error: could not read package directory: open .terraform/providers/' \
+               'registry.terraform.io/datadog/datadog/4.10.0/darwin_arm64: no such file'
+        real = 'Error: monitor 123 not found'
+
+        expect(gone).to match(Absorb::Roundtrip::PROVIDER_UNAVAILABLE)
+        expect(real).not_to match(Absorb::Roundtrip::PROVIDER_UNAVAILABLE)
+      end
+
+      it 'also recognises the lock-file form of the same failure' do
+        locked = 'provider registry.terraform.io/datadog/datadog: required by this ' \
+                 'configuration but no version is selected'
+
+        expect(locked).to match(Absorb::Roundtrip::PROVIDER_UNAVAILABLE)
+      end
+    end
+
     it 'classifies an empty plan as no_changes' do
       rt = roundtrip(capture_with)
       out = rt.classify_plan(:monitors, '1', 'n', { ok: true, out: 'No changes. Your infrastructure matches.', err: '' })

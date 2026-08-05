@@ -194,15 +194,33 @@ when 'roundtrip'
       puts "      #{o.detail}" if o.detail
     end
     clean = outcomes.count(&:clean?)
+    stranded = outcomes.count { |o| o.status == :provider_unavailable }
     puts "roundtrip: #{clean}/#{outcomes.size} planned to No changes"
-    receipt = (clean == outcomes.size ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
-              .call(command: 'roundtrip', target: File.basename(options[:root]),
-                    findings: {
-                      'planned' => outcomes.size, 'noChanges' => clean,
-                      'outcomes' => outcomes.map { |o|
-                        { 'kind' => o.kind.to_s, 'id' => o.id.to_s, 'status' => o.status.to_s }
-                      }
-                    })
+    if stranded.positive?
+      warn "roundtrip: #{stranded} objects could not be planned at all -- the provider was " \
+           'unavailable. This is NOT a rate; the run could not answer.'
+    end
+    findings = {
+      'planned' => outcomes.size, 'noChanges' => clean,
+      'providerUnavailable' => stranded,
+      'outcomes' => outcomes.map do |o|
+        { 'kind' => o.kind.to_s, 'id' => o.id.to_s, 'status' => o.status.to_s }
+      end
+    }
+    # ERROR, not FAIL: a provider that vanished says nothing about the bodies,
+    # so the run could not answer rather than answering no.
+    receipt =
+      if stranded.positive?
+        Absorb::Receipt.error(command: 'roundtrip', target: File.basename(options[:root]),
+                              message: "#{stranded} objects could not be planned: provider unavailable",
+                              findings: findings)
+      elsif clean == outcomes.size
+        Absorb::Receipt.pass(command: 'roundtrip', target: File.basename(options[:root]),
+                             findings: findings)
+      else
+        Absorb::Receipt.fail(command: 'roundtrip', target: File.basename(options[:root]),
+                             findings: findings)
+      end
   rescue StandardError => e
     receipt = Absorb::Receipt.error(command: 'roundtrip', target: File.basename(options[:root]),
                                     message: e.message)
