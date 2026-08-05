@@ -633,6 +633,136 @@ module Pangea
                        sample_rate: payload.dig('filter', 'sample_rate') }.compact] }
         end
 
+        # ── the account layer ────────────────────────────────────────────
+
+        def team(payload)
+          a = payload['attributes'] || {}
+          canonicalize(name: a['name'].to_s, handle: a['handle'].to_s,
+                       description: a['description'].to_s)
+        end
+
+        # Datadog ships Admin / Standard / Read Only into every account and
+        # marks them `managed`. They are the role equivalent of a read-only
+        # integration pipeline -- except the provider has NO resource for them
+        # at all, so they are not adoptable and must not be emitted. 3 of this
+        # estate's 4 roles are managed.
+        def role_managed?(payload)
+          payload.dig('attributes', 'managed') == true
+        end
+
+        # KNOWN LIMITATION, provider 4.10.0. `terraform import` of a role does
+        # not hydrate its `permission` blocks into state, so every permission
+        # reads as an addition and the plan never empties -- the same read gap
+        # that made the typed `datadog_dashboard` unusable. Emitting it is still
+        # right: the code correctly describes the estate, and an apply converges
+        # the live role. It is the round trip that is lossy, not the body.
+        def role(payload)
+          a = payload['attributes'] || {}
+          permissions = Array(payload.dig('relationships', 'permissions', 'data'))
+                        .map { |p| { id: p['id'].to_s } }
+          attrs = { name: a['name'].to_s }
+          attrs[:permission] = permissions unless permissions.empty?
+          canonicalize(attrs)
+        end
+
+        # `client_token` and `api_key_id` are computed by the provider and the
+        # list response carries neither secret, so nothing credential-bearing
+        # crosses into the emitted code.
+        RUM_FIELDS = { 'name' => :name, 'type' => :type }.freeze
+
+        def rum_application(payload)
+          a = payload['attributes'] || {}
+          canonicalize(RUM_FIELDS.each_with_object({}) do |(api, tf), h|
+            h[tf] = a[api] unless a[api].nil?
+          end)
+        end
+
+        # `datadog_apm_retention_filter` accepts exactly ONE filter_type. Datadog
+        # ships defaults using others (spans-errors-sampling-processor,
+        # spans-appsec-sampling-processor), and the provider rejects them at
+        # validate -- not a diff, a hard error. Both of this estate's filters are
+        # of that kind, so both are Datadog's to own.
+        APM_FILTER_TYPE = 'spans-sampling-processor'
+
+        def apm_retention_filter_adoptable?(payload)
+          payload.dig('attributes', 'filter_type') == APM_FILTER_TYPE
+        end
+
+        def apm_retention_filter(payload)
+          a = payload['attributes'] || {}
+          attrs = {
+            name: a['name'].to_s,
+            enabled: a['enabled'] == true,
+            filter_type: a['filter_type'].to_s,
+            rate: a['rate']
+          }
+          attrs[:filter] = { query: a.dig('filter', 'query').to_s } if a['filter']
+          attrs[:trace_rate] = a['trace_rate'] unless a['trace_rate'].nil?
+          canonicalize(attrs.compact)
+        end
+
+        # A list's membership IS the resource; its own record reports
+        # `dashboards: null` and the members arrive from a second endpoint.
+        def dashboard_list(payload)
+          items = Array(payload['dashboards']).map do |d|
+            { dash_id: d['id'].to_s, type: d['type'].to_s }
+          end
+          attrs = { name: payload['name'].to_s }
+          attrs[:dash_item] = items unless items.empty?
+          canonicalize(attrs)
+        end
+
+        ACCOUNT_STRUCTURAL = {
+          'datadog_team' => %w[id type],
+          'datadog_role' => %w[id type relationships],
+          'datadog_rum_application' => %w[id type],
+          'datadog_apm_retention_filter' => %w[id type],
+          'datadog_dashboard_list' => %w[id type name dashboards]
+        }.freeze
+
+        # Server-owned counters and audit stamps. Reported as unmanageable
+        # rather than as oversights, because no provider models them and
+        # authoring them would be meaningless.
+        ACCOUNT_SERVER_ATTRS = %w[created_at modified_at created created_by modified modified_by
+                                  created_by_handle modified_by_handle updated_by_handle
+                                  user_count team_count link_count is_managed managed
+                                  provisioned_by summary editable execution_order
+                                  org_id updated_at author dashboard_count is_favorite
+                                  application_id api_key_id client_token is_active
+                                  ootb_metrics_installed short_name product_scales].freeze
+
+        # Real, authored state the provider declines to model. A RUM
+        # application's tags and its replay sampling rates are configuration
+        # someone chose, and `datadog_rum_application` carries only name and
+        # type -- so adopting one silently leaves those settings unmanaged.
+        # Saying so is the difference between a gap and a surprise.
+        ACCOUNT_UNMANAGEABLE = {
+          'datadog_rum_application' => %w[tags product_analytics_replay_sample_rate
+                                          error_tracking_exclusion_filter_enabled
+                                          apm_rum_flat_sampling_replay_enabled
+                                          apm_rum_flat_sampling_replay_sample_rate]
+        }.freeze
+
+        def account_unmapped(kind, payload)
+          structural = ACCOUNT_STRUCTURAL.fetch(kind, [])
+          attrs = payload['attributes'].is_a?(Hash) ? payload['attributes'] : payload
+          unmanageable = ACCOUNT_UNMANAGEABLE.fetch(kind, [])
+          leftover = attrs.keys - structural - account_mapped_keys(kind) -
+                     ACCOUNT_SERVER_ATTRS - unmanageable
+          present = unmanageable.select { |k| attrs.key?(k) && !blank?(attrs[k]) }
+          { fields: leftover.sort, unmanageable: present.sort }
+        end
+
+        ACCOUNT_MAPPED = {
+          'datadog_team' => %w[name handle description],
+          'datadog_role' => %w[name],
+          'datadog_rum_application' => %w[name type],
+          'datadog_apm_retention_filter' => %w[name enabled filter_type rate filter trace_rate],
+          'datadog_dashboard_list' => %w[name dashboards]
+        }.freeze
+
+        def account_mapped_keys(kind) = ACCOUNT_MAPPED.fetch(kind, [])
+
         # Structural keys carry the object's identity or discriminate which
         # resource it becomes. They are consumed by the emitter, not lost, so
         # reporting them as oversights would be noise.

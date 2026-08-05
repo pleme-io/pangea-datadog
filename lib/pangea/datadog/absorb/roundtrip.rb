@@ -51,7 +51,13 @@ module Pangea
           logs_integration_pipelines: { resource: 'datadog_logs_integration_pipeline',
                                         capture: :logs_pipelines },
           logs_metrics: { resource: 'datadog_logs_metric', capture: :logs_metrics },
-          logs_indexes: { resource: 'datadog_logs_index', capture: :logs_indexes }
+          logs_indexes: { resource: 'datadog_logs_index', capture: :logs_indexes },
+          teams: { resource: 'datadog_team', capture: :teams },
+          roles: { resource: 'datadog_role', capture: :roles },
+          rum_applications: { resource: 'datadog_rum_application', capture: :rum_applications },
+          apm_retention_filters: { resource: 'datadog_apm_retention_filter',
+                                   capture: :apm_retention_filters },
+          dashboard_lists: { resource: 'datadog_dashboard_list', capture: :dashboard_lists }
         }.freeze
 
         Outcome = Struct.new(:kind, :id, :name, :status, :detail, keyword_init: true) do
@@ -90,6 +96,12 @@ module Pangea
           case kind
           when :monitors
             ids.select { |id| rules.adopt?(capture.read(:monitors, id)) }
+          when :roles
+            ids.reject { |id| Normalize.role_managed?(capture.read(:roles, id)) }
+          when :apm_retention_filters
+            ids.select do |id|
+              Normalize.apm_retention_filter_adoptable?(capture.read(:apm_retention_filters, id))
+            end
           when :logs_custom_pipelines
             ids.reject { |id| Normalize.logs_pipeline_read_only?(capture.read(:logs_pipelines, id)) }
           when :logs_integration_pipelines
@@ -210,6 +222,11 @@ module Pangea
           when :logs_integration_pipelines then stringify(Normalize.logs_integration_pipeline(payload))
           when :logs_metrics then stringify(Normalize.logs_metric(payload))
           when :logs_indexes then stringify(Normalize.logs_index(payload))
+          when :teams then stringify(Normalize.team(payload))
+          when :roles then stringify(Normalize.role(payload))
+          when :rum_applications then stringify(Normalize.rum_application(payload))
+          when :apm_retention_filters then stringify(Normalize.apm_retention_filter(payload))
+          when :dashboard_lists then stringify(Normalize.dashboard_list(payload))
           else raise Error, "no terraform body for #{kind}"
           end
         end

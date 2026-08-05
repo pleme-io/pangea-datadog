@@ -76,6 +76,19 @@ module Pangea
           imports.merge!(emit_simple(:logs_indexes, :datadog_logs_index, 'logs_indexes') do |p|
             Normalize.logs_index(p)
           end)
+          imports.merge!(emit_simple(:teams, :datadog_team, 'teams') { |p| Normalize.team(p) })
+          imports.merge!(emit_roles)
+          imports.merge!(emit_simple(:rum_applications, :datadog_rum_application, 'rum_applications') do |p|
+            Normalize.rum_application(p)
+          end)
+          imports.merge!(emit_simple(:apm_retention_filters, :datadog_apm_retention_filter,
+                                     'apm_retention_filters',
+                                     only: ->(p) { Normalize.apm_retention_filter_adoptable?(p) }) do |p|
+            Normalize.apm_retention_filter(p)
+          end)
+          imports.merge!(emit_simple(:dashboard_lists, :datadog_dashboard_list, 'dashboard_lists') do |p|
+            Normalize.dashboard_list(p)
+          end)
           File.write(File.join(out_dir, 'imports.json'), "#{JSON.pretty_generate(imports)}\n")
           imports
         end
@@ -122,6 +135,30 @@ module Pangea
           imports
         end
 
+        # Datadog ships Admin / Standard / Read Only into every account and marks
+        # them `managed`. Unlike a read-only pipeline there is no second resource
+        # to fall back to -- the provider models managed roles not at all -- so
+        # they are skipped outright rather than emitted as something they are
+        # not. 3 of this estate's 4 roles are managed.
+        def emit_roles
+          imports = {}
+          entries = []
+
+          capture.each(:roles) do |id, payload|
+            next if Normalize.role_managed?(payload)
+
+            slug = resource_slug(payload.dig('attributes', 'name'), id)
+            entries << [slug, Normalize.role(payload)]
+            imports["datadog_role.#{slug}"] = id
+          end
+          return imports if entries.empty?
+
+          write_template('roles', entries.sort_by(&:first)) do |slug, attrs|
+            render_resource(:datadog_role, slug, attrs)
+          end
+          imports
+        end
+
         # Datadog's own integration pipelines and an account's custom pipelines
         # come back from ONE endpoint but are TWO provider resources -- the
         # read-only ones carry nothing but `is_enabled`. Emitting a read-only
@@ -160,12 +197,15 @@ module Pangea
         # SLOs and downtimes need none of the monitor/dashboard machinery: no
         # provenance split, no tiering, no archetypes. One file, one resource per
         # captured object, named off the object's own name.
-        def emit_simple(kind, resource, file)
+        def emit_simple(kind, resource, file, only: nil)
           imports = {}
           entries = []
 
           capture.each(kind) do |id, payload|
-            slug = resource_slug(payload['name'] || payload['message'] || kind.to_s, id)
+            next if only && !only.call(payload)
+
+            slug = resource_slug(payload['name'] || payload.dig('attributes', 'name') ||
+                                 payload['message'] || kind.to_s, id)
             entries << [slug, yield(payload)]
             imports["#{resource}.#{slug}"] = id
           end

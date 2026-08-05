@@ -144,6 +144,11 @@ module Pangea
               when 'datadog_logs_integration_pipeline' then Normalize.logs_integration_pipeline(payload)
               when 'datadog_logs_metric' then Normalize.logs_metric(payload)
               when 'datadog_logs_index' then Normalize.logs_index(payload)
+              when 'datadog_team' then Normalize.team(payload)
+              when 'datadog_role' then Normalize.role(payload)
+              when 'datadog_rum_application' then Normalize.rum_application(payload)
+              when 'datadog_apm_retention_filter' then Normalize.apm_retention_filter(payload)
+              when 'datadog_dashboard_list' then Normalize.dashboard_list(payload)
               else Normalize.dashboard(payload)
               end
 
@@ -207,7 +212,12 @@ module Pangea
           'datadog_logs_custom_pipeline' => :logs_pipelines,
           'datadog_logs_integration_pipeline' => :logs_pipelines,
           'datadog_logs_metric' => :logs_metrics,
-          'datadog_logs_index' => :logs_indexes
+          'datadog_logs_index' => :logs_indexes,
+          'datadog_team' => :teams,
+          'datadog_role' => :roles,
+          'datadog_rum_application' => :rum_applications,
+          'datadog_apm_retention_filter' => :apm_retention_filters,
+          'datadog_dashboard_list' => :dashboard_lists
         }.freeze
 
         def load_payload(kind, id)
@@ -235,6 +245,10 @@ module Pangea
           when 'datadog_logs_custom_pipeline', 'datadog_logs_integration_pipeline',
                'datadog_logs_metric', 'datadog_logs_index'
             u = Normalize.logs_unmapped(kind, payload)
+            [u[:fields], u[:unmanageable]]
+          when 'datadog_team', 'datadog_role', 'datadog_rum_application',
+               'datadog_apm_retention_filter', 'datadog_dashboard_list'
+            u = Normalize.account_unmapped(kind, payload)
             [u[:fields], u[:unmanageable]]
           else
             [Normalize.dashboard_unmapped(payload), []]

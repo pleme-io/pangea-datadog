@@ -21,7 +21,21 @@ module Pangea
           @root = root
         end
 
-        DEFAULT_KINDS = %i[monitors dashboards slos downtimes logs_pipelines logs_metrics logs_indexes].freeze
+        DEFAULT_KINDS = %i[monitors dashboards slos downtimes
+                           logs_pipelines logs_metrics logs_indexes
+                           teams roles rum_applications apm_retention_filters
+                           dashboard_lists].freeze
+
+        # kind => the reader on Client and the field its id lives in. These
+        # kinds need none of the per-object follow-up fetches monitors and
+        # dashboards do, so one table replaces five near-identical blocks.
+        SIMPLE_KINDS = {
+          teams: [:teams, 'id'],
+          roles: [:roles, 'id'],
+          rum_applications: [:rum_applications, 'id'],
+          apm_retention_filters: [:apm_retention_filters, 'id'],
+          dashboard_lists: [:dashboard_lists, 'id']
+        }.freeze
 
         def self.run(client:, root:, kinds: DEFAULT_KINDS, progress: nil)
           capture = new(root)
@@ -81,6 +95,15 @@ module Pangea
             indexes.each { |i| capture.write(:logs_indexes, i.fetch('name'), i) }
             counts[:logs_indexes] = indexes.size
             progress&.call(:logs_indexes, indexes.size)
+          end
+
+          SIMPLE_KINDS.each do |kind, (reader, id_field)|
+            next unless kinds.include?(kind)
+
+            items = client.public_send(reader)
+            items.each { |i| capture.write(kind, i.fetch(id_field), i) }
+            counts[kind] = items.size
+            progress&.call(kind, items.size)
           end
 
           capture.write_manifest(counts, site: client.site)

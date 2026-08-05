@@ -746,6 +746,113 @@ RSpec.describe Absorb do
     end
   end
 
+  # The account layer: teams, roles, RUM applications, APM retention filters
+  # and dashboard lists.
+  describe 'the account layer' do
+    let(:managed_role) do
+      { 'id' => 'r1', 'type' => 'roles',
+        'attributes' => { 'name' => 'Datadog Admin Role', 'managed' => true },
+        'relationships' => { 'permissions' => { 'data' => [{ 'id' => 'p1', 'type' => 'permissions' }] } } }
+    end
+
+    let(:custom_role) do
+      { 'id' => 'r2', 'type' => 'roles',
+        'attributes' => { 'name' => 'DataDog Read/Write' },
+        'relationships' => { 'permissions' => { 'data' => [{ 'id' => 'p1', 'type' => 'permissions' }] } } }
+    end
+
+    it 'reads a team out of its attributes envelope' do
+      body = Absorb::Normalize.team(
+        { 'id' => 't', 'attributes' => { 'name' => 'Infra', 'handle' => 'infra',
+                                         'description' => 'Devops - SRE', 'user_count' => 6 } }
+      )
+
+      expect(body).to eq({ description: 'Devops - SRE', handle: 'infra', name: 'Infra' })
+    end
+
+    # Datadog ships Admin / Standard / Read Only into every account. Unlike a
+    # read-only pipeline there is no second resource to fall back to, so they
+    # are not adoptable at all. 3 of this estate's 4 roles are managed.
+    it 'tells a Datadog-managed role from a real one' do
+      expect(Absorb::Normalize.role_managed?(managed_role)).to be(true)
+      expect(Absorb::Normalize.role_managed?(custom_role)).to be(false)
+    end
+
+    it 'never emits a managed role' do
+      Dir.mktmpdir do |dir|
+        cap = Absorb::Capture.new(File.join(dir, 'estate'))
+        cap.prepare
+        cap.write(:roles, 'r1', managed_role)
+        cap.write(:roles, 'r2', custom_role)
+        imports = Absorb::Emit.new(capture: cap, out_dir: File.join(dir, 'g'), rules: rules).run
+
+        expect(imports.keys).to eq(['datadog_role.datadog_read_write_r2'])
+      end
+    end
+
+    it 'carries a role permission as an id block' do
+      expect(Absorb::Normalize.role(custom_role)[:permission]).to eq([{ id: 'p1' }])
+    end
+
+    # The provider accepts exactly one filter_type and rejects the others at
+    # VALIDATE, not as a diff -- emitting one would be code terraform refuses.
+    # Both of this estate's filters are Datadog's own defaults.
+    it 'refuses to emit an APM filter type the provider rejects' do
+      default_filter = { 'id' => 'f1', 'attributes' => { 'name' => 'Error Default', 'enabled' => true,
+                                                         'filter_type' => 'spans-errors-sampling-processor',
+                                                         'rate' => 1 } }
+      ours = { 'id' => 'f2', 'attributes' => { 'name' => 'Ours', 'enabled' => true,
+                                               'filter_type' => 'spans-sampling-processor', 'rate' => 1 } }
+
+      expect(Absorb::Normalize.apm_retention_filter_adoptable?(default_filter)).to be(false)
+      expect(Absorb::Normalize.apm_retention_filter_adoptable?(ours)).to be(true)
+
+      Dir.mktmpdir do |dir|
+        cap = Absorb::Capture.new(File.join(dir, 'estate'))
+        cap.prepare
+        cap.write(:apm_retention_filters, 'f1', default_filter)
+        cap.write(:apm_retention_filters, 'f2', ours)
+        imports = Absorb::Emit.new(capture: cap, out_dir: File.join(dir, 'g'), rules: rules).run
+
+        expect(imports.keys).to eq(['datadog_apm_retention_filter.ours_f2'])
+      end
+    end
+
+    # A list's own record reports `dashboards: null`; membership arrives from a
+    # second endpoint and IS the resource.
+    it 'builds a dashboard list from its fetched membership' do
+      body = Absorb::Normalize.dashboard_list(
+        { 'id' => 1, 'name' => 'Saas', 'dashboards' => [{ 'id' => 'abc', 'type' => 'custom_timeboard' }] }
+      )
+
+      expect(body).to eq({ dash_item: [{ dash_id: 'abc', type: 'custom_timeboard' }], name: 'Saas' })
+    end
+
+    # `client_token` was screened for before this kind was added: the list
+    # response carries none, so nothing credential-bearing reaches the code.
+    it 'carries only the two RUM fields the provider models' do
+      body = Absorb::Normalize.rum_application(
+        { 'id' => 'a', 'attributes' => { 'name' => 'Mobile', 'type' => 'react-native',
+                                         'api_key_id' => 'k', 'application_id' => 'x', 'tags' => ['a'] } }
+      )
+
+      expect(body).to eq({ name: 'Mobile', type: 'react-native' })
+    end
+
+    # RUM tags and replay sampling rates are authored settings the provider
+    # does not model. Reporting them is the difference between a known gap and
+    # a surprise after adoption.
+    it 'reports the RUM settings the provider declines to model' do
+      u = Absorb::Normalize.account_unmapped(
+        'datadog_rum_application',
+        { 'attributes' => { 'name' => 'M', 'tags' => ['env:prod'], 'api_key_id' => 'k' } }
+      )
+
+      expect(u[:fields]).to be_empty
+      expect(u[:unmanageable]).to eq(['tags'])
+    end
+  end
+
   # Terraform parses every JSON string value as a TEMPLATE. Absorbed text is
   # data, and terraform read it as syntax: two of the five monitors previously
   # written off as estate defects were actually this.

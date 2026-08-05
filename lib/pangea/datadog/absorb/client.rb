@@ -136,6 +136,38 @@ module Pangea
           get_json('/api/v1/logs/config/indexes').fetch('indexes', [])
         end
 
+        # The account layer: who exists, what they may do, and which
+        # dashboards/traces/apps are grouped how. None of it credential-bearing
+        # -- the RUM list response carries `api_key_id` (a reference) but no
+        # `client_token`, which was screened before this was added.
+        def teams
+          get_json('/api/v2/team').fetch('data', [])
+        end
+
+        def roles
+          get_json('/api/v2/roles').fetch('data', [])
+        end
+
+        def rum_applications
+          get_json('/api/v2/rum/applications').fetch('data', [])
+        end
+
+        def apm_retention_filters
+          get_json('/api/v2/apm/config/retention-filters').fetch('data', [])
+        end
+
+        # A list's own record reports `dashboards: null`; the membership needs a
+        # second call, and membership is the entire point of the resource.
+        def dashboard_lists
+          get_json('/api/v1/dashboard/lists/manual').fetch('dashboard_lists', []).map do |list|
+            list.merge('dashboards' => dashboard_list_items(list.fetch('id')))
+          end
+        end
+
+        def dashboard_list_items(id)
+          get_json("/api/v2/dashboard/lists/manual/#{id}/dashboards").fetch('dashboards', [])
+        end
+
         private
 
         def get_json(path)
