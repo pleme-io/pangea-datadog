@@ -1210,6 +1210,53 @@ RSpec.describe Absorb do
         expect(described_class.run(cap).dangling.size).to eq(1)
       end
 
+      # A composite names its constituents by id. One being deleted leaves an
+      # alert that cannot resolve. The estate has 4 composites over 20
+      # references, all intact -- so the estate proves no false positives and
+      # these specs prove the check actually fires.
+      it 'reports a composite naming a monitor that is gone' do
+        cap = capture_with(monitors: {
+                             '1' => { 'id' => 1, 'name' => 'live' },
+                             '2' => { 'id' => 2, 'name' => 'comp', 'type' => 'composite',
+                                      'query' => '1 && 999999' }
+                           })
+
+        expect(described_class.run(cap).dangling.first.detail).to include('999999')
+      end
+
+      it 'passes a composite whose constituents all exist' do
+        cap = capture_with(monitors: {
+                             '111111' => { 'id' => 111_111, 'name' => 'a' },
+                             '222222' => { 'id' => 222_222, 'name' => 'b' },
+                             '3' => { 'id' => 3, 'name' => 'comp', 'type' => 'composite',
+                                      'query' => '111111 && 222222' }
+                           })
+
+        expect(described_class.run(cap)).to be_ok
+      end
+
+      # The id-shaped-number scan is bounded to composites on purpose: a metric
+      # alert's threshold can be a large number and would otherwise read as a
+      # monitor id.
+      it 'does not scan a metric alert for monitor ids' do
+        cap = capture_with(monitors: { '1' => {
+                             'id' => 1, 'name' => 'metric', 'type' => 'query alert',
+                             'query' => 'avg(last_5m):avg:x{*} > 9999999'
+                           } })
+
+        expect(described_class.run(cap)).to be_ok
+      end
+
+      # A monitor-based SLO losing a monitor does not break loudly -- it keeps
+      # reporting, on less than it claims.
+      it 'reports a monitor-based SLO naming a monitor that is gone' do
+        cap = capture_with(monitors: { '1' => { 'id' => 1, 'name' => 'live' } },
+                           slos: { 's' => { 'id' => 's', 'name' => 'uptime', 'type' => 'monitor',
+                                            'monitor_ids' => [1, 999_999], 'thresholds' => [] } })
+
+        expect(described_class.run(cap).dangling.first.detail).to include('999999')
+      end
+
       it 'reports an SLO widget naming an SLO that is gone' do
         cap = capture_with(slos: { 's' => slo('s', '7d') },
                            monitors: { '1' => { 'id' => 1, 'name' => 'live' } })

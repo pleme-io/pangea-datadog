@@ -119,9 +119,55 @@ module Pangea
               found.concat(widget_references(definition, id, payload, monitors, slos))
             end
           end
+          found.concat(composite_references(capture, monitors))
+          found.concat(slo_monitor_references(capture, monitors))
           found.sort_by(&:id)
         rescue Errno::ENOENT
           []
+        end
+
+        # A composite monitor names its constituents by id in the query
+        # (`12345 && 67890`). One of them being deleted leaves an alert that
+        # cannot resolve, and the estate has four composites over twenty
+        # references -- all intact today, which is what says this check does not
+        # false-positive on real queries.
+        COMPOSITE = 'composite'
+        MONITOR_ID = /\b(\d{6,})\b/
+
+        def composite_references(capture, monitors)
+          return [] if monitors.empty?
+
+          found = []
+          capture.each(:monitors) do |_id, payload|
+            next unless payload['type'] == COMPOSITE
+
+            payload['query'].to_s.scan(MONITOR_ID).flatten.uniq.each do |ref|
+              next if monitors.include?(ref)
+
+              found << Finding.new(id: payload['id'].to_s, name: payload['name'].to_s,
+                                   detail: "composite references monitor #{ref}, " \
+                                           'which is not in the estate')
+            end
+          end
+          found
+        end
+
+        # A monitor-based SLO computes from the monitors it names. One of them
+        # being deleted makes the SLO silently wrong rather than obviously
+        # broken -- it keeps reporting, on less than it claims.
+        def slo_monitor_references(capture, monitors)
+          return [] if monitors.empty?
+
+          found = []
+          capture.each(:slos) do |_id, payload|
+            Array(payload['monitor_ids']).map(&:to_s).each do |ref|
+              next if monitors.include?(ref)
+
+              found << Finding.new(id: payload['id'].to_s, name: payload['name'].to_s,
+                                   detail: "SLO references monitor #{ref}, which is not in the estate")
+            end
+          end
+          found
         end
 
         def each_widget(widgets, &block)
