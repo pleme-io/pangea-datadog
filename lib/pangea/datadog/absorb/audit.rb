@@ -40,6 +40,13 @@ module Pangea
         # one that never existed.
         SLO_ALERT = /error_budget\("([^"]+)"\)\.over\("([^"]+)"\)/
 
+        # Datadog rejects a service check that carries no grouping:
+        # "A grouping must be specified for custom checks". Measured across the
+        # estate's 6 service checks -- 5 carry `.by(...)` and validate, the one
+        # that does not is exactly the monitor terraform refused to plan.
+        SERVICE_CHECK = 'service check'
+        GROUPING = '.by('
+
         Finding = Struct.new(:id, :name, :detail, keyword_init: true)
 
         Result = Struct.new(:broken, :silent, :clusters, :monitors, keyword_init: true) do
@@ -76,8 +83,7 @@ module Pangea
 
           capture.each(:monitors) do |_id, payload|
             monitors += 1
-            defect = slo_timeframe_defect(payload, slos)
-            broken << defect if defect
+            broken.concat(defects(payload, slos))
             entry = silence(payload, today)
             silent << entry if entry
           end
@@ -95,6 +101,23 @@ module Pangea
             timeframes[payload['id']] = Array(payload['thresholds']).filter_map { |t| t['timeframe'] }
           end
           timeframes
+        end
+
+        # Every way a monitor can be unable to evaluate. Kept as a list rather
+        # than a first-match so one monitor can carry two defects, and so
+        # adding a class cannot silently displace another.
+        def defects(payload, slos)
+          [slo_timeframe_defect(payload, slos), service_check_defect(payload)].compact
+        end
+
+        def service_check_defect(payload)
+          return nil unless payload['type'] == SERVICE_CHECK
+
+          query = payload['query'].to_s
+          return nil if query.empty? || query.include?(GROUPING)
+
+          Finding.new(id: payload['id'].to_s, name: payload['name'].to_s,
+                      detail: 'service check carries no grouping; Datadog requires .by(...)')
         end
 
         def slo_timeframe_defect(payload, slos)

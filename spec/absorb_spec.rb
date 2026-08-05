@@ -1113,6 +1113,52 @@ RSpec.describe Absorb do
       expect(described_class.run(cap)).to be_ok
     end
 
+    # The third known defect, and the reason it was added: the audit found 2 of
+    # the 3 monitors terraform had independently refused. An audit that finds
+    # two thirds of the known defects gives false confidence.
+    it 'reports a service check with no grouping' do
+      cap = capture_with(monitors: { '1' => {
+                           'id' => 1, 'name' => 'ntp', 'type' => 'service check',
+                           'query' => '"ntp.in_sync".over("*").last(2).count_by_status()'
+                         } })
+      result = described_class.run(cap)
+
+      expect(result).not_to be_ok
+      expect(result.broken.first.detail).to include('no grouping')
+    end
+
+    it 'passes a service check that carries one' do
+      cap = capture_with(monitors: { '1' => {
+                           'id' => 1, 'name' => 'ok', 'type' => 'service check',
+                           'query' => '"aws.status".over("*").by("region").last(2).count_by_status()'
+                         } })
+
+      expect(described_class.run(cap)).to be_ok
+    end
+
+    # The grouping rule is specific to service checks; applying it to a metric
+    # alert would flag most of the estate.
+    it 'does not demand a grouping from a metric alert' do
+      cap = capture_with(monitors: { '1' => {
+                           'id' => 1, 'name' => 'metric', 'type' => 'query alert',
+                           'query' => 'avg(last_5m):avg:system.cpu.user{*} > 90'
+                         } })
+
+      expect(described_class.run(cap)).to be_ok
+    end
+
+    # Defects are collected, not first-match: one monitor can carry two, and
+    # adding a class must not silently displace another.
+    it 'reports every defect a single monitor carries' do
+      cap = capture_with(slos: { 's' => slo('s', '7d') },
+                         monitors: { '1' => {
+                           'id' => 1, 'name' => 'both', 'type' => 'service check',
+                           'query' => %(error_budget("s").over("30d") > 80)
+                         } })
+
+      expect(described_class.run(cap).broken.size).to eq(2)
+    end
+
     # THE distinction. Getting this wrong makes the audit cry wolf on every
     # healthy ephemeral monitor, and then the real defects get ignored with it.
     it 'does NOT fail the gate on a monitor that is merely silent' do
