@@ -1052,6 +1052,21 @@ RSpec.describe Absorb do
     # chart's schema requires an RFC 1123 DNS label. `dashboards_archetype`
     # failed that outright while the other seven passed -- a mismatch that only
     # showed up when the two artifacts were actually put together.
+    # A shard name lives in two namespaces with different rules, and deriving
+    # both from one string is what broke: the chart needs a DNS label
+    # (hyphens), Ruby needs a valid identifier (underscores).
+    # `template :akeyless_datadog_dashboards-archetype do` is NOT a parse error
+    # -- Ruby reads it as symbol-minus-method-call and dies at runtime, which is
+    # why `ruby -c` reported "Syntax OK" on a file that could never run.
+    it 'gives the template a valid ruby identifier even when the shard is hyphenated' do
+      _imports, out = emit_all
+      Dir[File.join(out, 'shards', '*.rb')].each do |file|
+        header = File.read(file)[/^template :(\S+) do/, 1]
+
+        expect(header).to match(/\A[a-z_][a-z0-9_]*\z/), "#{File.basename(file)} header: #{header}"
+      end
+    end
+
     it 'names every shard as a DNS label the chart will accept' do
       _imports, out = emit_all
       names = Dir[File.join(out, 'shards', '*.imports.json')]

@@ -208,6 +208,15 @@ module Pangea
           slices
         end
 
+        # A shard name lives in TWO namespaces with different rules, and
+        # deriving both from one string broke the second: the chart needs an
+        # RFC 1123 DNS label (hyphens), Ruby needs a valid identifier
+        # (underscores). `template :akeyless_datadog_dashboards-archetype do`
+        # is not a parse error -- it reads as SYMBOL MINUS METHOD CALL and dies
+        # at runtime with "undefined local variable or method 'archetype'",
+        # which is why `ruby -c` waved it through.
+        def ruby_ident(name) = name.tr('-', '_')
+
         def write_shard(shard, parts, slice)
           loads = parts[:files].sort.map { |f| "    load File.join(__dir__, '..', '#{f}.rb')" }
           builds = parts[:modules].sort.map do |m|
@@ -217,7 +226,7 @@ module Pangea
             #{HEADER}
             require 'pangea-datadog'
 
-            template :akeyless_datadog_#{shard} do
+            template :akeyless_datadog_#{ruby_ident(shard)} do
               provider :datadog,
                        api_key: ENV.fetch('DD_API_KEY', ''),
                        app_key: ENV.fetch('DD_APP_KEY', ''),
