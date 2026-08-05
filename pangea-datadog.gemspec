@@ -16,8 +16,17 @@ Gem::Specification.new do |spec|
   spec.require_paths         = [%(lib)]
   spec.required_ruby_version = %(>=3.3.0)
 
+  # config/ is EXCLUDED deliberately, not incidentally.
+  #
+  # This gem publishes to rubygems.org on merge, and config/ holds real
+  # deployment inputs -- an organisation's account name, its secret-path
+  # convention, its dashboard naming. Those are a consumer's internals, and a
+  # glob is the wrong thing to decide whether they become public. The gem ships
+  # the ENGINE; every organisation-specific fact lives in a config the operator
+  # supplies. Specs read config/ from the repo checkout, not from the packaged
+  # gem, so nothing is lost by leaving it out.
   spec.files = `git ls-files -z`.split("\x0").reject do |f|
-    f.match(%r{^(test|spec|features)/})
+    f.match(%r{^(test|spec|features|config)/})
   end
 
   spec.bindir      = %(exe)
