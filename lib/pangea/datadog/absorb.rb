@@ -132,7 +132,7 @@ module Pangea
       # counted differently.
       # Read-only and counts only -- see Census for why it must never persist
       # what it reads.
-      def census(config_path: nil, account: nil, site: nil)
+      def census(config_path: nil, account: nil, site: nil, provider_schema: nil)
         cfg = config_path ? Config.load(config_path) : nil
         client =
           if cfg
@@ -140,7 +140,8 @@ module Pangea
           else
             Client.for_account(account, site: site || Client::DEFAULT_SITE)
           end
-        Census.run(client: client, covered: Emit::ADDRESS_SHARDS.keys.size)
+        declared = provider_schema ? Census.declared_types(provider_schema) : nil
+        Census.run(client: client, covered: Emit::ADDRESS_SHARDS.keys.size, declared: declared)
       end
 
       def audit(root:)

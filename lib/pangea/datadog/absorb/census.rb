@@ -8,11 +8,11 @@ module Pangea
       # What the estate holds that absorb does not absorb.
       #
       # The question this answers is NOT "how many resource types does the
-      # provider declare". Provider 4.10.0 declares 136 and absorb touches 16,
-      # and reading that as a 12% coverage figure is wrong in the way that
-      # matters: a type with no objects in the account is not a gap, it is an
-      # absence. Measured on this estate, 20 of the untouched types the census
-      # can reach hold ZERO objects. The real gap was three.
+      # provider declare". Provider 4.10.0 declares 136 and absorb emits 14, and
+      # reading that as a 10% coverage figure is wrong in the way that matters:
+      # a type with no objects in the account is not a gap, it is an absence.
+      # Measured on this estate, 11 of the untouched types this census can reach
+      # hold ZERO objects. The real gap is two.
       #
       # READ-ONLY, AND COUNTS ONLY. Every probe is a GET and nothing is written
       # to disk -- not a capture, a census. That matters because some of these
@@ -20,12 +20,13 @@ module Pangea
       # not persisted pending a PII decision, and a census must not be the thing
       # that quietly starts persisting them.
       #
-      # FOUR OUTCOMES, and the fourth is the one a naive version loses:
+      # FIVE OUTCOMES, and the last two are the ones a naive version loses:
       #
       #   covered      absorb emits this type
       #   empty        reachable, zero objects -- an absence, not a gap
       #   gap          reachable, holds objects, absorb ignores them
       #   unreachable  403/404/405 -- the census COULD NOT ANSWER
+      #   unprobed     declared by the provider, never looked at by this census
       #
       # `unreachable` must never be folded into `empty`. This account's app key
       # lacks scopes for security monitoring, workflows, datasets and org
@@ -33,6 +34,8 @@ module Pangea
       # report full coverage of a surface nobody has actually looked at, which
       # is the exact failure this project keeps finding elsewhere.
       module Census
+        Error = Class.new(StandardError)
+
         # resource type => [path, the key its collection lives under]
         # A nil key means the response body IS the collection.
         PROBES = {
@@ -68,12 +71,19 @@ module Pangea
 
         Finding = Struct.new(:type, :count, :code, keyword_init: true)
 
-        Result = Struct.new(:gaps, :empty, :unreachable, :unmanageable, :covered, keyword_init: true) do
+        Result = Struct.new(:gaps, :empty, :unreachable, :unmanageable, :covered,
+                            :unprobed, :stale_probes, keyword_init: true) do
           def ok? = gaps.empty?
+
+          # nil means no provider schema was supplied, so the census does not
+          # know its own denominator and must not imply one.
+          def denominator_known? = !unprobed.nil?
 
           def findings
             {
               'covered' => covered,
+              'unprobed' => unprobed&.size,
+              'staleProbes' => stale_probes || [],
               'gaps' => gaps.size,
               'empty' => empty.size,
               'unreachable' => unreachable.size,
@@ -86,6 +96,16 @@ module Pangea
           def to_s
             lines = ["census: #{covered} types emitted, #{gaps.size} gaps, " \
                      "#{empty.size} reachable-and-empty, #{unreachable.size} unreachable"]
+            if denominator_known?
+              lines << "  UNPROBED #{unprobed.size} provider types this census does not look at " \
+                       '-- silence here is not coverage'
+            else
+              lines << '  UNPROBED unknown -- no provider schema given, so this census cannot ' \
+                       'say what it does not look at. Pass --provider-schema.'
+            end
+            Array(stale_probes).each do |type|
+              lines << "  STALE PROBE #{type} is not declared by this provider -- the probe is dead"
+            end
             gaps.each { |f| lines << "  GAP #{f.type} holds #{f.count}, absorb ignores it" }
             unmanageable.each do |f|
               lines << "  UNMANAGEABLE #{f.type} holds #{f.count}, no provider resource exists"
@@ -99,7 +119,18 @@ module Pangea
 
         module_function
 
-        def run(client:, covered:)
+        # `declared` is every resource type the PROVIDER declares, read from its
+        # own schema. Without it this census has no denominator: it can say what
+        # it looked at and found, and nothing at all about what it never looked
+        # at. PROBES is a list of things someone thought of, and a report keyed
+        # on what you remembered cannot describe what you forgot -- the same
+        # defect verify's coverage check had when it walked its own table
+        # instead of the capture directory.
+        #
+        # Measured here: the provider declares 136 types, absorb emits 14, this
+        # census probes 19. That leaves 103 the census is silent about, and
+        # silence is not coverage.
+        def run(client:, covered:, declared: nil)
           gaps = []
           empty = []
           unreachable = []
@@ -117,7 +148,32 @@ module Pangea
 
           Result.new(gaps: gaps.sort_by(&:type), empty: empty.sort_by(&:type),
                      unreachable: unreachable.sort_by(&:type),
-                     unmanageable: unmanageable_findings(client), covered: covered)
+                     unmanageable: unmanageable_findings(client), covered: covered,
+                     unprobed: unprobed_types(declared), stale_probes: stale_probes(declared))
+        end
+
+        def unprobed_types(declared)
+          return nil if declared.nil?
+
+          (declared - Emit::ADDRESS_SHARDS.keys - PROBES.keys).sort
+        end
+
+        # A probe for a type the provider does not declare is dead: either a
+        # typo, or a resource the provider removed. Either way it will answer
+        # forever without measuring anything.
+        def stale_probes(declared)
+          return [] if declared.nil?
+
+          (PROBES.keys - declared).sort
+        end
+
+        # The provider's own schema, as `terraform providers schema -json`
+        # writes it.
+        def declared_types(schema_path)
+          schemas = JSON.parse(File.read(schema_path))['provider_schemas']
+          raise Error, "#{schema_path} holds no provider_schemas" unless schemas.is_a?(Hash)
+
+          schemas.values.flat_map { |s| (s['resource_schemas'] || {}).keys }.uniq.sort
         end
 
         def unmanageable_findings(client)

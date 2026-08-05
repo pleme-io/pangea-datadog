@@ -656,6 +656,65 @@ RSpec.describe Absorb do
       expect(result.gaps.map(&:type)).not_to include('notebooks')
     end
 
+    # PROBES is a list of things someone thought of. Without the provider's own
+    # schema the census has no denominator, and a report that quietly omits its
+    # denominator reads as full coverage. Measured: 136 declared, 14 emitted,
+    # 19 probed -- 103 types this census is silent about.
+    it 'names how many provider types it never looks at' do
+      declared = Absorb::Census::PROBES.keys + Absorb::Emit::ADDRESS_SHARDS.keys +
+                 %w[datadog_thing_a datadog_thing_b]
+
+      result = Absorb::Census.run(client: client_answering({}), covered: 14, declared: declared)
+
+      expect(result.unprobed).to eq(%w[datadog_thing_a datadog_thing_b])
+      expect(result.to_s).to include('UNPROBED 2 provider types')
+    end
+
+    it 'refuses to imply a denominator it was never given' do
+      result = Absorb::Census.run(client: client_answering({}), covered: 14)
+
+      expect(result.denominator_known?).to be(false)
+      expect(result.unprobed).to be_nil
+      expect(result.to_s).to include('UNPROBED unknown')
+      expect(result.findings['unprobed']).to be_nil
+    end
+
+    # A probe for a type the provider does not declare answers forever without
+    # measuring anything -- a typo, or a resource the provider removed.
+    it 'reports a probe for a type the provider does not declare' do
+      declared = Absorb::Census::PROBES.keys - ['datadog_user'] + Absorb::Emit::ADDRESS_SHARDS.keys
+
+      result = Absorb::Census.run(client: client_answering({}), covered: 14, declared: declared)
+
+      expect(result.stale_probes).to eq(['datadog_user'])
+      expect(result.to_s).to include('STALE PROBE datadog_user')
+    end
+
+    it 'reads the declared types out of a real provider schema document' do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, 'schema.json')
+        File.write(path, JSON.generate({
+                                         'provider_schemas' => {
+                                           'registry.terraform.io/datadog/datadog' => {
+                                             'resource_schemas' => { 'datadog_monitor' => {}, 'datadog_role' => {} }
+                                           }
+                                         }
+                                       }))
+
+        expect(Absorb::Census.declared_types(path)).to eq(%w[datadog_monitor datadog_role])
+      end
+    end
+
+    it 'refuses a schema document that holds no provider schemas' do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, 'schema.json')
+        File.write(path, JSON.generate({ 'format_version' => '1.0' }))
+
+        expect { Absorb::Census.declared_types(path) }
+          .to raise_error(Absorb::Census::Error, /no provider_schemas/)
+      end
+    end
+
     it 'survives a body that is not JSON rather than aborting the census' do
       result = Absorb::Census.run(
         client: client_answering('/api/v2/incidents/config/types' => [200, '<html>nope']),

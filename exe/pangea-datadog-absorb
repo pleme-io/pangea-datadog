@@ -60,6 +60,10 @@ parser = OptionParser.new do |o|
   o.on('--account NAME', 'credential dir under ~/.config/datadog (config wins)') { |v| options[:account] = v }
   o.on('--site SITE', 'datadog site (config wins)') { |v| options[:site] = v }
   o.on('--receipt-dir DIR', 'write a typed JSON receipt per run (keyway)') { |v| options[:receipt_dir] = v }
+  o.on('--provider-schema PATH',
+       'terraform providers schema -json output (census: what it does NOT look at)') do |v|
+    options[:provider_schema] = v
+  end
   o.on('--provider-dir DIR', 'terraform provider filesystem mirror (roundtrip)') { |v| options[:provider_dir] = v }
   o.on('--kinds LIST', 'comma-separated: monitors,dashboards,slos,downtimes,logs_pipelines,logs_metrics,logs_indexes') { |v| options[:kinds] = v.split(',').map(&:strip).map(&:to_sym) }
   o.on('--per-kind N', Integer, 'objects to sample per kind (default 1)') { |v| options[:per_kind] = v }
@@ -158,7 +162,7 @@ when 'audit'
 when 'census'
   begin
     result  = Absorb.census(config_path: options[:config], account: options[:account],
-                            site: options[:site])
+                            site: options[:site], provider_schema: options[:provider_schema])
     receipt = (result.ok? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
               .call(command: 'census', target: 'estate', findings: result.findings)
   rescue StandardError => e
