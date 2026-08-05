@@ -1269,6 +1269,21 @@ RSpec.describe Absorb do
       end
     end
 
+    # The provider models rate and trace_rate as STRINGS while the API returns
+    # numbers. Latent rather than harmless: both live filters are Datadog's own
+    # defaults, which the provider rejects on filter_type before any type check,
+    # so this would only have surfaced on the first genuinely adoptable filter.
+    it 'emits the rates as strings, the way the provider declares them' do
+      body = Absorb::Normalize.apm_retention_filter(
+        { 'attributes' => { 'name' => 'Ours', 'enabled' => true,
+                            'filter_type' => 'spans-sampling-processor',
+                            'rate' => 1, 'trace_rate' => 0 } }
+      )
+
+      expect(body[:rate]).to eq('1')
+      expect(body[:trace_rate]).to eq('0')
+    end
+
     # A list's own record reports `dashboards: null`; membership arrives from a
     # second endpoint and IS the resource.
     it 'builds a dashboard list from its fetched membership' do

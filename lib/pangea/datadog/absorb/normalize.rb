@@ -856,14 +856,19 @@ module Pangea
 
         def apm_retention_filter(payload)
           a = payload['attributes'] || {}
+          # The provider models rate and trace_rate as STRINGS; the API returns
+          # numbers. Same asymmetry as monitor `priority`, and it would only
+          # have surfaced the first time someone adopted a filter the provider
+          # actually accepts -- both live ones are its own defaults, which it
+          # rejects on filter_type before ever reaching a type check.
           attrs = {
             name: a['name'].to_s,
             enabled: a['enabled'] == true,
             filter_type: a['filter_type'].to_s,
-            rate: a['rate']
+            rate: a['rate'].to_s
           }
           attrs[:filter] = { query: a.dig('filter', 'query').to_s } if a['filter']
-          attrs[:trace_rate] = a['trace_rate'] unless a['trace_rate'].nil?
+          attrs[:trace_rate] = a['trace_rate'].to_s unless a['trace_rate'].nil?
           canonicalize(attrs.compact)
         end
 
