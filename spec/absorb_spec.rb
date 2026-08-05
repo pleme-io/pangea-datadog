@@ -1442,6 +1442,47 @@ RSpec.describe Absorb do
       expect(Absorb::Verify.new(capture: cap, out_dir: out).run).to be_ok
     end
 
+    # The GENERAL form of the same hole, and the reason the check is not a list
+    # of known kinds: someone captures a new kind and never teaches emit about
+    # it. A hardcoded check would stay green forever.
+    it 'fails when a whole captured kind contributes nothing' do
+      cap = Absorb::Capture.new(File.join(@dir, 'estate'))
+      cap.prepare
+      cap.write(:monitors, '123', monitor_payload)
+      cap.write(:teams, 't1', { 'id' => 't1', 'attributes' => { 'name' => 'T', 'handle' => 't' } })
+      out = File.join(@dir, 'g')
+      Absorb::Emit.new(capture: cap, out_dir: out, rules: rules).run
+
+      # emit forgot this kind: drop it from the output entirely
+      imports = JSON.parse(File.read(File.join(out, 'imports.json')))
+      File.write(File.join(out, 'imports.json'),
+                 JSON.generate(imports.reject { |a, _| a.start_with?('datadog_team.') }))
+      FileUtils.rm_f(File.join(out, 'teams.rb'))
+
+      result = Absorb::Verify.new(capture: cap, out_dir: out).run
+
+      expect(result).not_to be_ok
+      expect(result.uncovered.map { |u| u[:kind] }).to include(:teams)
+    end
+
+    # apm_retention_filters legitimately emits ZERO: the provider rejects both
+    # of the estate's filter types at validate. A kind-level check that could
+    # not express "zero is correct here" would fail the real estate forever.
+    it 'accepts a kind whose every object is permanently excluded' do
+      cap = Absorb::Capture.new(File.join(@dir, 'estate'))
+      cap.prepare
+      cap.write(:monitors, '123', monitor_payload)
+      cap.write(:apm_retention_filters, 'f1', {
+                  'id' => 'f1', 'attributes' => { 'name' => 'Default', 'enabled' => true,
+                                                  'filter_type' => 'spans-errors-sampling-processor',
+                                                  'rate' => 1 }
+                })
+      out = File.join(@dir, 'g')
+      Absorb::Emit.new(capture: cap, out_dir: out, rules: rules).run
+
+      expect(Absorb::Verify.new(capture: cap, out_dir: out).run).to be_ok
+    end
+
     it 'carries the gap into the receipt, not just the printed summary' do
       cap = capture_with_powerpack(reconciled: false)
       out = File.join(@dir, 'g')

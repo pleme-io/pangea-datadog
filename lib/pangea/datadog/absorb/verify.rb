@@ -62,10 +62,10 @@ module Pangea
           end
 
           def to_s
-            uncovered.group_by { |u| u[:kind] }.each do |kind, entries|
-              tail = "  UNCOVERED #{entries.size} #{kind} in the capture were never emitted " \
-                     "(#{entries.first[:reason]})"
-              (@uncovered_lines ||= []) << tail
+            # A kind-level finding covers the whole kind (id '*'), so printing
+            # the FINDING count would read as an object count and understate it.
+            uncovered.each do |entry|
+              (@uncovered_lines ||= []) << "  UNCOVERED #{entry[:kind]}: #{entry[:reason]}"
             end
             lines = ["checked #{checked}, matched #{matched}, diffs #{diffs.size}, " \
                      "unmapped #{unmapped.size}, unmanageable #{unmanageable.size}"]
@@ -262,15 +262,53 @@ module Pangea
         # filter_type the provider rejects, a retire-tier dashboard, a
         # terraform-owned monitor -- those are correct exclusions and must stay
         # silent, or the gate cries wolf about decisions it was told to make.
+        # Which of a kind's captured objects emit SHOULD have declared.
+        #
+        # Only kinds whose emission is config-independent appear here. Monitors
+        # and dashboards are excluded deliberately: what they emit depends on
+        # provenance rules and retire tiers that live in the config, and verify
+        # holds no config -- guessing their expected set would fail the real
+        # estate on every deliberate exclusion.
+        EXPECTED_EMISSION = {
+          slos: ->(_payload) { true },
+          downtimes: ->(_payload) { true },
+          logs_pipelines: ->(_payload) { true },
+          logs_metrics: ->(_payload) { true },
+          logs_indexes: ->(_payload) { true },
+          teams: ->(_payload) { true },
+          rum_applications: ->(_payload) { true },
+          dashboard_lists: ->(_payload) { true },
+          roles: ->(payload) { !Normalize.role_managed?(payload) },
+          apm_retention_filters: ->(payload) { Normalize.apm_retention_filter_adoptable?(payload) },
+          powerpacks: ->(_payload) { true }
+        }.freeze
+
+        # Objects the capture holds that emit should have declared and did not.
+        #
+        # ONE mechanism, not two. An earlier version reported per-object gaps
+        # and whole-silent-kinds separately, which double-counted a kind that
+        # was both, and flagged `roles` as silent when every captured role was
+        # correctly excluded for being Datadog-managed.
         def uncovered_objects(imports)
           declared = imports.values.map(&:to_s).to_set
-          capture.ids(:powerpacks).reject { |id| declared.include?(id.to_s) }
-                 .map do |id|
-            { kind: :powerpacks, id: id,
-              reason: 'no reconciled body yet -- run `reconcile --kinds powerpacks`' }
+
+          EXPECTED_EMISSION.flat_map do |kind, should_emit|
+            missing = capture.ids(kind).reject { |id| declared.include?(id.to_s) }
+                             .select { |id| should_emit.call(capture.read(kind, id)) }
+            next [] if missing.empty?
+
+            [{ kind: kind, id: '*', reason: reason_for(kind, missing.size) }]
           end
         rescue Errno::ENOENT
           []
+        end
+
+        def reason_for(kind, count)
+          if kind == :powerpacks
+            "#{count} with no reconciled body -- run `reconcile --kinds powerpacks`"
+          else
+            "#{count} captured and adoptable, none emitted -- emit declares nothing for them"
+          end
         end
 
         SIDECAR_KINDS = {
