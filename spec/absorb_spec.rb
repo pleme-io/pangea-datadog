@@ -1035,15 +1035,16 @@ RSpec.describe Absorb do
         cap
       end
 
-      def client_with_monitors(n)
+      def client_with_monitors(ids)
+        list = ids.is_a?(Integer) ? Array.new(ids) { |i| i } : ids
         Class.new do
-          def initialize(n) = @n = n
+          def initialize(list) = @list = list
           def probe(path)
-            return [200, JSON.generate(Array.new(@n) { |i| { 'id' => i } })] if path.start_with?('/api/v1/monitor')
+            return [200, JSON.generate(@list.map { |i| { 'id' => i } })] if path.start_with?('/api/v1/monitor')
 
             [404, '']
           end
-        end.new(n)
+        end.new(list)
       end
 
       # It first covered 9 of 13 kinds, so "no INCOMPLETE" meant "the nine I
@@ -1053,6 +1054,41 @@ RSpec.describe Absorb do
       it 'can check every kind the capture can hold' do
         expect(Absorb::Census::COMPLETENESS.keys.sort)
           .to eq(Absorb::Capture::DEFAULT_KINDS.sort)
+      end
+
+      # THE CASE COUNTS CANNOT SEE. Delete one object and create another and
+      # the count is unchanged, which is an ordinary week in a live estate. A
+      # capture that stale passes a count check while every dangling finding
+      # drawn from it is wrong about which objects exist.
+      it 'catches a swap, where the counts agree and the sets do not' do
+        Dir.mktmpdir do |dir|
+          cap = capture_holding(dir, 5)
+          # live has 0..3 and 99; the capture has 0..4
+          result = Absorb::Census.run(client: client_with_monitors([0, 1, 2, 3, 99]),
+                                      covered: 14, capture: cap)
+
+          finding = result.incomplete.find { |f| f.type == 'monitors' }
+          expect([finding.count, finding.code]).to eq([5, 5])
+          expect(finding.missing).to eq(1)
+          expect(finding.extra).to eq(1)
+          expect(result.to_s).to include('1 only in the estate, 1 only in the capture')
+        end
+      end
+
+      # THE ID-NAMESPACE TRAP. Downtimes were checked against /api/v2/downtime
+      # while capture reads /api/v1/downtime. The counts agreed at 18 so the
+      # check passed, but v1 ids are numeric and v2 ids are UUIDs, so comparing
+      # the SETS reports all 18 missing and all 18 extra. Every probe here must
+      # mirror the endpoint capture actually calls.
+      it 'probes the same endpoint capture reads, so ids are comparable' do
+        expect(Absorb::Census::COMPLETENESS[:downtimes].first).to eq('/api/v1/downtime')
+      end
+
+      # A logs index is identified by name, not id, and using 'id' would read
+      # every index as missing.
+      it 'uses each kind own id field' do
+        expect(Absorb::Census::COMPLETENESS[:logs_indexes].last).to eq('name')
+        expect(Absorb::Census::COMPLETENESS[:monitors].last).to eq('id')
       end
 
       it 'reports a capture that holds fewer objects than the estate' do

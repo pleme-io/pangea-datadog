@@ -76,24 +76,32 @@ module Pangea
         # filters -- a third of the capture unchecked and indistinguishable
         # from verified. A spec pins that this stays exhaustive.
         #
-        # kind => [path, collection key]
+        # EACH PATH MIRRORS THE ONE CAPTURE ITSELF CALLS, and that is not
+        # decoration. Downtimes were checked against /api/v2/downtime while
+        # capture reads /api/v1/downtime: the counts agreed at 18, so the check
+        # passed, but the two endpoints return DIFFERENT ID NAMESPACES --
+        # numeric in v1, UUID in v2. Comparing ids across that boundary reports
+        # all 18 as missing and all 18 as extra. The count check was comparing
+        # apples to oranges and getting away with it.
+        #
+        # kind => [path, collection key, id field]
         COMPLETENESS = {
-          monitors: ['/api/v1/monitor?page_size=1000', nil],
-          dashboards: ['/api/v1/dashboard', 'dashboards'],
-          slos: ['/api/v1/slo?limit=1000', 'data'],
-          downtimes: ['/api/v2/downtime?page%5Bsize%5D=1000', 'data'],
-          teams: ['/api/v2/team?page%5Bsize%5D=1000', 'data'],
-          powerpacks: ['/api/v2/powerpacks?page%5Blimit%5D=1000', 'data'],
-          rum_applications: ['/api/v2/rum/applications', 'data'],
-          dashboard_lists: ['/api/v1/dashboard/lists/manual', 'dashboard_lists'],
-          logs_metrics: ['/api/v2/logs/config/metrics', 'data'],
-          logs_pipelines: ['/api/v1/logs/config/pipelines', nil],
-          logs_indexes: ['/api/v1/logs/config/indexes', 'indexes'],
-          apm_retention_filters: ['/api/v2/apm/config/retention-filters', 'data'],
+          monitors: ['/api/v1/monitor?page_size=1000', nil, 'id'],
+          dashboards: ['/api/v1/dashboard', 'dashboards', 'id'],
+          slos: ['/api/v1/slo?limit=1000', 'data', 'id'],
+          downtimes: ['/api/v1/downtime', nil, 'id'],
+          teams: ['/api/v2/team?page%5Bsize%5D=1000', 'data', 'id'],
+          powerpacks: ['/api/v2/powerpacks?page%5Blimit%5D=1000', 'data', 'id'],
+          rum_applications: ['/api/v2/rum/applications', 'data', 'id'],
+          dashboard_lists: ['/api/v1/dashboard/lists/manual', 'dashboard_lists', 'id'],
+          logs_metrics: ['/api/v2/logs/config/metrics', 'data', 'id'],
+          logs_pipelines: ['/api/v1/logs/config/pipelines', nil, 'id'],
+          logs_indexes: ['/api/v1/logs/config/indexes', 'indexes', 'name'],
+          apm_retention_filters: ['/api/v2/apm/config/retention-filters', 'data', 'id'],
           # page[size]=1000 is a 400 here: roles caps at 100, unlike the other
           # v2 collections. A page parameter that works everywhere else is not
           # a page parameter that works.
-          roles: ['/api/v2/roles?page%5Bsize%5D=100', 'data']
+          roles: ['/api/v2/roles?page%5Bsize%5D=100', 'data', 'id']
         }.freeze
 
         # Live objects that NO provider resource can manage. Terraform is not
@@ -104,7 +112,7 @@ module Pangea
           'notebooks' => ['/api/v1/notebooks', 'data']
         }.freeze
 
-        Finding = Struct.new(:type, :count, :code, :suspect, keyword_init: true)
+        Finding = Struct.new(:type, :count, :code, :suspect, :missing, :extra, keyword_init: true)
 
         # Datadog's v2 collections paginate, and the DEFAULT PAGE IS SMALL --
         # /api/v2/users returns 10 while the account holds 80. The first version
@@ -137,7 +145,8 @@ module Pangea
               'staleProbes' => stale_probes || [],
               'incomplete' => incomplete&.size,
               'incompleteDetail' => (incomplete || []).map do |f|
-                { 'kind' => f.type, 'captured' => f.count, 'live' => f.code }
+                { 'kind' => f.type, 'captured' => f.count, 'live' => f.code,
+                  'onlyInEstate' => f.missing, 'onlyInCapture' => f.extra }
               end,
               'gaps' => gaps.size,
               'empty' => empty.size,
@@ -161,8 +170,9 @@ module Pangea
                        'say what it does not look at. Pass --provider-schema.'
             end
             Array(incomplete).each do |f|
-              lines << "  INCOMPLETE #{f.type}: captured #{f.count}, live #{f.code} -- every " \
-                       'dangling finding over this kind is unsafe until it matches'
+              lines << "  INCOMPLETE #{f.type}: captured #{f.count}, live #{f.code} " \
+                       "(#{f.missing} only in the estate, #{f.extra} only in the capture) -- " \
+                       'every dangling finding over this kind is unsafe until it matches'
             end
             Array(stale_probes).each do |type|
               lines << "  STALE PROBE #{type} is not declared by this provider -- the probe is dead"
@@ -219,22 +229,42 @@ module Pangea
         end
 
         # nil when no capture was given: unasked, not answered.
+        # COMPARES ID SETS, not counts. Counts coincide the moment one object
+        # is deleted and another created -- an everyday week in a live estate --
+        # and a capture that stale would pass while every dangling finding drawn
+        # from it was quietly wrong about which objects exist.
         def completeness(client, capture)
           return nil if capture.nil?
 
-          COMPLETENESS.filter_map do |kind, (path, key)|
-            code, live = probe(client, path, key)
-            next unless code == 200
+          COMPLETENESS.filter_map do |kind, (path, key, id_field)|
+            live = live_ids(client, path, key, id_field)
+            next if live.nil?
 
             held = begin
-              capture.ids(kind).size
+              capture.ids(kind).map(&:to_s).to_set
             rescue Errno::ENOENT
-              0
+              Set.new
             end
             next if held == live
 
-            Finding.new(type: kind.to_s, count: held, code: live)
+            Finding.new(type: kind.to_s, count: held.size, code: live.size,
+                        missing: (live - held).size, extra: (held - live).size)
           end
+        end
+
+        def live_ids(client, path, key, id_field)
+          code, body = client.probe(path)
+          return nil unless code == 200
+
+          parsed = begin
+            JSON.parse(body)
+          rescue JSON::ParserError
+            nil
+          end
+          items = key ? (parsed.is_a?(Hash) ? parsed[key] : nil) : parsed
+          return nil unless items.is_a?(Array)
+
+          items.map { |item| item[id_field].to_s }.to_set
         end
 
         def unprobed_types(declared)
