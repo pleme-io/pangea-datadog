@@ -104,6 +104,39 @@ module Pangea
           roles: ['/api/v2/roles?page%5Bsize%5D=100', 'data', 'id']
         }.freeze
 
+        # WHY EACH UNPROBED TYPE IS UNPROBED. A bare "UNPROBED 103" is a number,
+        # not an answer: it cannot tell a type nobody considered from one that
+        # was considered and ruled out. Ordered, first match wins, and a type
+        # matching none of them is reported as UNCLASSIFIED so a new provider
+        # resource cannot slip in unremarked.
+        UNPROBED_REASONS = [
+          # _ruleset and _rulesets, deliberately NOT _rule: a bare `_rule` is a
+          # security rule, and a greedy pattern here silently re-filed 13 of
+          # them as ordering config because this entry is matched first.
+          [/_order$|_rules$|_rulesets?$|_concurrency_cap$/,
+           'ordering or account-level setting, not a collection of objects'],
+          [/_json$|_v2$|\Adatadog_dashboard\z|\Adatadog_downtime_schedule\z/,
+           'alternate representation of a type absorb already emits'],
+          [/\Adatadog_team_|\Adatadog_user_role\z|\Adatadog_service_account/,
+           'sub-resource of a captured kind; adopt the parent first'],
+          [/\Adatadog_org|\Adatadog_child_org|_allowlist\z|\Adatadog_organization/,
+           'org-level singleton, not per-object config'],
+          [/\Adatadog_(api_key|application_key|app_key)/,
+           'credential material, deliberately never captured'],
+          [/\Adatadog_(appsec|csm_threats|cloud_workload_security|cloud_configuration|compliance|security_monitoring|security_notification|sensitive_data_scanner)/,
+           'security/compliance surface the app key cannot read (403); blocked on key scope, not on absorb'],
+          [/\Adatadog_(aws_cur_config|azure_uc_config|gcp_uc_config|cost_budget|custom_allocation)/,
+           'cloud-cost management, a separate domain from observability config'],
+          [/\Adatadog_synthetics/,
+           'synthetics: the account holds zero tests, so the domain is empty'],
+          [/\Adatadog_integration_/,
+           'per-account integration; adopting these moves cloud credentials into code'],
+          [/\Adatadog_on_call_/,
+           'on-call scheduling: the account holds zero schedules'],
+          [/\Adatadog_(incident|notebook|webhook|action_connection|app_builder|datastore|deployment_gate|observability_pipeline|openapi_api|restriction_policy|rum_retention|secure_embed|service_definition|slo_correction|software_catalog|agentless_scanning|cloud_inventory_sync|metric_metadata|monitor_notification_rule|authn_mapping|dataset|reference_table)/,
+           'reachable but empty, or a product this account does not use']
+        ].freeze
+
         # Live objects that NO provider resource can manage. Terraform is not
         # the tool for these, so they are not a gap absorb could ever close --
         # but they are estate surface, and leaving them out of the report would
@@ -159,12 +192,24 @@ module Pangea
             }
           end
 
+          def classify_unprobed(types)
+            grouped = Hash.new { |h, k| h[k] = [] }
+            types.each do |type|
+              match = UNPROBED_REASONS.find { |pattern, _| pattern.match?(type) }
+              key = match ? match[1] : 'UNCLASSIFIED -- decide whether this belongs in scope'
+              grouped[key] << type
+            end
+            grouped.sort_by { |reason, list| [reason.start_with?('UNCLASSIFIED') ? 0 : 1, -list.size] }
+          end
+
           def to_s
             lines = ["census: #{covered} types emitted, #{gaps.size} gaps, " \
                      "#{empty.size} reachable-and-empty, #{unreachable.size} unreachable"]
             if denominator_known?
-              lines << "  UNPROBED #{unprobed.size} provider types this census does not look at " \
-                       '-- silence here is not coverage'
+              lines << "  UNPROBED #{unprobed.size} provider types this census does not look at:"
+              classify_unprobed(unprobed).each do |reason, types|
+                lines << format('    %3d  %s', types.size, reason)
+              end
             else
               lines << '  UNPROBED unknown -- no provider schema given, so this census cannot ' \
                        'say what it does not look at. Pass --provider-schema.'

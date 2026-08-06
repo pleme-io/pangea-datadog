@@ -1232,6 +1232,25 @@ RSpec.describe Absorb do
     # schema the census has no denominator, and a report that quietly omits its
     # denominator reads as full coverage. Measured: 136 declared, 14 emitted,
     # 19 probed -- 103 types this census is silent about.
+    # A bare "UNPROBED 103" is a number, not an answer: it cannot tell a type
+    # nobody considered from one considered and ruled out. Every unprobed type
+    # must carry a stated reason, and this fails if a new provider resource
+    # appears with none -- which is how the last two were caught
+    # (cloud_configuration_rule, and tag_pipeline_ruleset, whose singular form
+    # the ordering pattern missed).
+    it 'has a stated reason for every type it does not probe' do
+      declared = Absorb::Census::PROBES.keys + Absorb::Emit::ADDRESS_SHARDS.keys +
+                 %w[datadog_logs_index_order datadog_monitor_json datadog_api_key
+                    datadog_integration_gcp datadog_team_membership datadog_synthetics_suite
+                    datadog_cloud_configuration_rule datadog_tag_pipeline_ruleset]
+
+      result = Absorb::Census.run(client: client_answering({}), covered: 14, declared: declared)
+      unclassified = result.classify_unprobed(result.unprobed)
+                           .select { |reason, _| reason.start_with?('UNCLASSIFIED') }
+
+      expect(unclassified).to be_empty
+    end
+
     it 'names how many provider types it never looks at' do
       declared = Absorb::Census::PROBES.keys + Absorb::Emit::ADDRESS_SHARDS.keys +
                  %w[datadog_thing_a datadog_thing_b]
