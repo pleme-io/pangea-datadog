@@ -231,7 +231,8 @@ when 'conform'
 when 'census'
   begin
     result  = Absorb.census(config_path: options[:config], account: options[:account],
-                            site: options[:site], provider_schema: options[:provider_schema])
+                            site: options[:site], provider_schema: options[:provider_schema],
+                            root: options[:root])
     receipt = (result.ok? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
               .call(command: 'census', target: 'estate', findings: result.findings)
   rescue StandardError => e

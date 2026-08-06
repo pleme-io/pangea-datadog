@@ -1022,6 +1022,61 @@ RSpec.describe Absorb do
 
     def ok(items) = [200, JSON.generate({ 'data' => items })]
 
+    # THE PRECONDITION FOR EVERY DANGLING FINDING THE AUDIT MAKES. "widget
+    # references monitor 106953745, which is not in the estate" is a defect if
+    # the capture holds every monitor and a false alarm if it does not. Nothing
+    # checked that: the audit guards only on a kind being entirely absent,
+    # which a partial capture sails straight past.
+    describe 'capture completeness' do
+      def capture_holding(dir, count)
+        cap = Absorb::Capture.new(File.join(dir, 'estate'))
+        cap.prepare
+        count.times { |i| cap.write(:monitors, i.to_s, { 'id' => i, 'name' => "m#{i}" }) }
+        cap
+      end
+
+      def client_with_monitors(n)
+        Class.new do
+          def initialize(n) = @n = n
+          def probe(path)
+            return [200, JSON.generate(Array.new(@n) { |i| { 'id' => i } })] if path.start_with?('/api/v1/monitor')
+
+            [404, '']
+          end
+        end.new(n)
+      end
+
+      it 'reports a capture that holds fewer objects than the estate' do
+        Dir.mktmpdir do |dir|
+          result = Absorb::Census.run(client: client_with_monitors(236), covered: 14,
+                                      capture: capture_holding(dir, 206))
+
+          finding = result.incomplete.find { |f| f.type == 'monitors' }
+          expect(finding.count).to eq(206)
+          expect(finding.code).to eq(236)
+          expect(result.to_s).to include('unsafe until it matches')
+        end
+      end
+
+      it 'says nothing when the capture matches the estate' do
+        Dir.mktmpdir do |dir|
+          result = Absorb::Census.run(client: client_with_monitors(5), covered: 14,
+                                      capture: capture_holding(dir, 5))
+
+          expect(result.incomplete).to be_empty
+        end
+      end
+
+      # nil, not empty: unasked is not the same as answered, and the receipt
+      # must not let a consumer read "no capture given" as "capture verified".
+      it 'reports null rather than empty when no capture was given' do
+        result = Absorb::Census.run(client: client_with_monitors(5), covered: 14)
+
+        expect(result.incomplete).to be_nil
+        expect(result.findings['incomplete']).to be_nil
+      end
+    end
+
     it 'calls a type with objects a gap' do
       result = Absorb::Census.run(
         client: client_answering('/api/v2/incidents/config/types' => ok([{ 'id' => 'a' }])),

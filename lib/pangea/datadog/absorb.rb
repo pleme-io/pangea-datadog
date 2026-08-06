@@ -186,7 +186,7 @@ module Pangea
 
       # Read-only and counts only -- see Census for why it must never persist
       # what it reads.
-      def census(config_path: nil, account: nil, site: nil, provider_schema: nil)
+      def census(config_path: nil, account: nil, site: nil, provider_schema: nil, root: nil)
         cfg = config_path ? Config.load(config_path) : nil
         client =
           if cfg
@@ -195,7 +195,11 @@ module Pangea
             Client.for_account(account, site: site || Client::DEFAULT_SITE)
           end
         declared = provider_schema ? Census.declared_types(provider_schema) : nil
-        Census.run(client: client, covered: Emit::ADDRESS_SHARDS.keys.size, declared: declared)
+        Census.run(client: client, covered: Emit::ADDRESS_SHARDS.keys.size, declared: declared,
+                   # Only when a capture is actually there. --root carries a
+                   # default, so passing it blindly would compare the estate
+                   # against an empty directory and call every kind incomplete.
+                   capture: root && Dir.exist?(root) ? Capture.new(root) : nil)
       end
 
       # A correctness audit of the captured estate. Read-only and OFFLINE --

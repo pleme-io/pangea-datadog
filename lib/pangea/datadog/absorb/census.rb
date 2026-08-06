@@ -61,6 +61,28 @@ module Pangea
           'datadog_org_group' => ['/api/v2/org_groups', 'data']
         }.freeze
 
+        # How to count a captured kind LIVE, so the capture can be checked
+        # against the estate it claims to mirror.
+        #
+        # THIS IS THE PRECONDITION FOR EVERY DANGLING FINDING the audit makes.
+        # "widget references monitor 106953745, which is not in the estate" is
+        # a defect if the capture holds every monitor, and a false alarm if it
+        # does not. Nothing checked that until now -- the audit guards only on
+        # a kind being entirely absent, which a partial capture passes.
+        #
+        # kind => [path, collection key]
+        COMPLETENESS = {
+          monitors: ['/api/v1/monitor?page_size=1000', nil],
+          dashboards: ['/api/v1/dashboard', 'dashboards'],
+          slos: ['/api/v1/slo?limit=1000', 'data'],
+          downtimes: ['/api/v2/downtime?page%5Bsize%5D=1000', 'data'],
+          teams: ['/api/v2/team?page%5Bsize%5D=1000', 'data'],
+          powerpacks: ['/api/v2/powerpacks?page%5Blimit%5D=1000', 'data'],
+          rum_applications: ['/api/v2/rum/applications', 'data'],
+          dashboard_lists: ['/api/v1/dashboard/lists/manual', 'dashboard_lists'],
+          logs_metrics: ['/api/v2/logs/config/metrics', 'data']
+        }.freeze
+
         # Live objects that NO provider resource can manage. Terraform is not
         # the tool for these, so they are not a gap absorb could ever close --
         # but they are estate surface, and leaving them out of the report would
@@ -88,7 +110,7 @@ module Pangea
         COMMON_PAGE_SIZES = [10, 20, 25, 50, 100, 200, 500, 1000].freeze
 
         Result = Struct.new(:gaps, :empty, :unreachable, :unmanageable, :covered,
-                            :unprobed, :stale_probes, keyword_init: true) do
+                            :unprobed, :stale_probes, :incomplete, keyword_init: true) do
           def ok? = gaps.empty?
 
           # nil means no provider schema was supplied, so the census does not
@@ -100,6 +122,10 @@ module Pangea
               'covered' => covered,
               'unprobed' => unprobed&.size,
               'staleProbes' => stale_probes || [],
+              'incomplete' => incomplete&.size,
+              'incompleteDetail' => (incomplete || []).map do |f|
+                { 'kind' => f.type, 'captured' => f.count, 'live' => f.code }
+              end,
               'gaps' => gaps.size,
               'empty' => empty.size,
               'unreachable' => unreachable.size,
@@ -120,6 +146,10 @@ module Pangea
             else
               lines << '  UNPROBED unknown -- no provider schema given, so this census cannot ' \
                        'say what it does not look at. Pass --provider-schema.'
+            end
+            Array(incomplete).each do |f|
+              lines << "  INCOMPLETE #{f.type}: captured #{f.count}, live #{f.code} -- every " \
+                       'dangling finding over this kind is unsafe until it matches'
             end
             Array(stale_probes).each do |type|
               lines << "  STALE PROBE #{type} is not declared by this provider -- the probe is dead"
@@ -152,7 +182,7 @@ module Pangea
         # Measured here: the provider declares 136 types, absorb emits 14, this
         # census probes 19. That leaves 103 the census is silent about, and
         # silence is not coverage.
-        def run(client:, covered:, declared: nil)
+        def run(client:, covered:, declared: nil, capture: nil)
           gaps = []
           empty = []
           unreachable = []
@@ -171,7 +201,27 @@ module Pangea
           Result.new(gaps: gaps.sort_by(&:type), empty: empty.sort_by(&:type),
                      unreachable: unreachable.sort_by(&:type),
                      unmanageable: unmanageable_findings(client), covered: covered,
-                     unprobed: unprobed_types(declared), stale_probes: stale_probes(declared))
+                     unprobed: unprobed_types(declared), stale_probes: stale_probes(declared),
+                     incomplete: completeness(client, capture))
+        end
+
+        # nil when no capture was given: unasked, not answered.
+        def completeness(client, capture)
+          return nil if capture.nil?
+
+          COMPLETENESS.filter_map do |kind, (path, key)|
+            code, live = probe(client, path, key)
+            next unless code == 200
+
+            held = begin
+              capture.ids(kind).size
+            rescue Errno::ENOENT
+              0
+            end
+            next if held == live
+
+            Finding.new(type: kind.to_s, count: held, code: live)
+          end
         end
 
         def unprobed_types(declared)
