@@ -689,6 +689,67 @@ RSpec.describe Absorb do
       expect(exercised.uniq.size).to be >= 12
     end
 
+    # THE SAME CHECK, AGAINST A REAL CAPTURE, REPRODUCIBLY.
+    #
+    # The fixtures above are hand-written and narrow: 13 objects shaped the way
+    # I expected them to be shaped. The interesting question is whether a real
+    # estate's bodies survive the typed layer, and that was answered once --
+    # 468 bodies, all accepted -- by a script in a scratchpad directory that
+    # nobody else could run and that no longer exists anywhere durable.
+    #
+    # An oracle only one person can run is not an oracle the project has. This
+    # is the same defect the schema dump had before it became a verb.
+    #
+    # Opt-in via ABSORB_ESTATE because the suite must stay hermetic: a captured
+    # estate is real customer data and does not belong in this repo. When the
+    # variable is absent the example SKIPS VISIBLY rather than passing, because
+    # a silent pass would read as "the real estate was checked".
+    it 'accepts every body in a real capture when one is pointed at' do
+      root = ENV.fetch('ABSORB_ESTATE', nil)
+      skip 'set ABSORB_ESTATE=/path/to/capture to check a real estate' if root.nil?
+
+      cap = Absorb::Capture.new(root)
+      config = ENV.fetch('ABSORB_CONFIG', File.expand_path('../config/akeyless.yaml', __dir__))
+      real_rules = File.exist?(config) ? Absorb::Rules.from(Absorb::Config.load(config)) : Absorb::Rules.none
+      roundtrip = Absorb::Roundtrip.new(capture: cap, provider_dir: '/nonexistent', rules: real_rules)
+
+      checked = 0
+      rejected = []
+      Absorb::Roundtrip::KINDS.each do |kind, spec_for_kind|
+        mod = typed_module(spec_for_kind[:resource])
+        next if mod.nil?
+
+        ids = begin
+          cap.ids(spec_for_kind[:capture])
+        rescue Errno::ENOENT
+          []
+        end
+        ids.each do |id|
+          body = begin
+            roundtrip.body_for(kind, cap.read(spec_for_kind[:capture], id), id)
+          rescue StandardError
+            nil
+          end
+          next if body.nil?
+
+          checked += 1
+          begin
+            synth = TerraformSynthesizer.new
+            synth.extend(mod)
+            synth.public_send(spec_for_kind[:resource], "probe_#{checked}",
+                              body.reject { |k, _| k.to_s == 'lifecycle' })
+          rescue StandardError => e
+            rejected << "#{spec_for_kind[:resource]} (#{id}): #{e.class}: #{e.message[0, 200]}"
+          end
+        end
+      end
+
+      expect(rejected).to be_empty
+      # A capture that produced no bodies would satisfy the assertion above
+      # while checking nothing at all.
+      expect(checked).to be_positive
+    end
+
     # The check above is green, which says nothing about whether it can go red.
     # This is the DEFECT IT EXISTS FOR, reproduced: terraform's block shape (a
     # one-element list) where the typed resource declares a Hash. It reached
