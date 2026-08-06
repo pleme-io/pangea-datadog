@@ -69,7 +69,13 @@ module Pangea
               'monitors' => monitors,
               'broken' => broken.size,
               'silent' => silent.size,
-              'dead' => dead.size,
+              # NULL, not 0, when the diagnosis did not run. The printed summary
+              # says "dead not-checked" for the same reason: a machine reading
+              # 0 concludes none were found, which is the confusion this audit
+              # exists to prevent, and a receipt that disagrees with the
+              # summary is worse than either alone.
+              'dead' => diagnosed? ? dead.size : nil,
+              'empty' => diagnosed? ? empty_dashboards.size : nil,
               'silenceDiagnosed' => diagnosed?,
               'deadMonitors' => dead.map { |f| { 'id' => f.id, 'detail' => f.detail } },
               'emptyDashboards' => empty_dashboards.map { |f| { 'id' => f.id, 'detail' => f.detail } },

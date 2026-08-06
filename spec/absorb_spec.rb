@@ -1966,6 +1966,45 @@ RSpec.describe Absorb do
       end
     end
 
+    # The codebase's own rule: the receipt can never disagree with the printed
+    # summary. Three finding classes were added to this audit and the receipt
+    # drifted -- it carried the emptyDashboards array but no `empty` count,
+    # while every other class has both.
+    describe 'the receipt and the printed summary' do
+      def audited(active)
+        cap = capture_with(monitors: {})
+        cap.write(:monitors, '1', { 'id' => 1, 'name' => 'm', 'type' => 'query alert',
+                                    'query' => 'avg(last_5m):avg:gone.metric{*} > 1',
+                                    'overall_state' => 'No Data',
+                                    'overall_state_modified' => '2026-01-01T00:00:00Z',
+                                    'message' => 'x @slack-ops', 'options' => {} })
+        cap.write(:dashboards, 'd1', { 'id' => 'd1', 'title' => 'b',
+                                       'widgets' => [{ 'definition' => { 'requests' => [{ 'q' => 'avg:gone.metric{*}' }] } }] })
+        described_class.run(cap, active_metrics: active)
+      end
+
+      it 'counts every class it prints' do
+        result = audited(['live.metric'])
+
+        expect(result.findings['dead']).to eq(result.dead.size)
+        expect(result.findings['empty']).to eq(result.empty_dashboards.size)
+        expect(result.findings['broken']).to eq(result.broken.size)
+        expect(result.findings['dangling']).to eq(result.dangling.size)
+        expect(result.findings['silent']).to eq(result.silent.size)
+      end
+
+      # A machine reading 0 concludes none were found. Null is the only honest
+      # answer when the question was never asked.
+      it 'reports null rather than zero for a diagnosis that did not run' do
+        result = audited(nil)
+
+        expect(result.findings['silenceDiagnosed']).to be(false)
+        expect(result.findings['dead']).to be_nil
+        expect(result.findings['empty']).to be_nil
+        expect(result.to_s).to include('dead not-checked')
+      end
+    end
+
     describe 'dashboards that render blank' do
       def board(id, queries)
         { 'id' => id, 'title' => "board #{id}",
