@@ -70,6 +70,12 @@ module Pangea
         # does not. Nothing checked that until now -- the audit guards only on
         # a kind being entirely absent, which a partial capture passes.
         #
+        # EVERY kind the capture can hold appears here. It first covered 9 of
+        # 13, so a census that found nothing wrong reported no INCOMPLETE while
+        # saying nothing at all about roles, both logs kinds and the APM
+        # filters -- a third of the capture unchecked and indistinguishable
+        # from verified. A spec pins that this stays exhaustive.
+        #
         # kind => [path, collection key]
         COMPLETENESS = {
           monitors: ['/api/v1/monitor?page_size=1000', nil],
@@ -80,7 +86,14 @@ module Pangea
           powerpacks: ['/api/v2/powerpacks?page%5Blimit%5D=1000', 'data'],
           rum_applications: ['/api/v2/rum/applications', 'data'],
           dashboard_lists: ['/api/v1/dashboard/lists/manual', 'dashboard_lists'],
-          logs_metrics: ['/api/v2/logs/config/metrics', 'data']
+          logs_metrics: ['/api/v2/logs/config/metrics', 'data'],
+          logs_pipelines: ['/api/v1/logs/config/pipelines', nil],
+          logs_indexes: ['/api/v1/logs/config/indexes', 'indexes'],
+          apm_retention_filters: ['/api/v2/apm/config/retention-filters', 'data'],
+          # page[size]=1000 is a 400 here: roles caps at 100, unlike the other
+          # v2 collections. A page parameter that works everywhere else is not
+          # a page parameter that works.
+          roles: ['/api/v2/roles?page%5Bsize%5D=100', 'data']
         }.freeze
 
         # Live objects that NO provider resource can manage. Terraform is not

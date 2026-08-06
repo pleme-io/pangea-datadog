@@ -1046,6 +1046,15 @@ RSpec.describe Absorb do
         end.new(n)
       end
 
+      # It first covered 9 of 13 kinds, so "no INCOMPLETE" meant "the nine I
+      # thought of are fine" while saying nothing about roles, both logs kinds
+      # or the APM filters. Unchecked read as verified. This keeps it
+      # exhaustive: add a capture kind and this fails until it is covered.
+      it 'can check every kind the capture can hold' do
+        expect(Absorb::Census::COMPLETENESS.keys.sort)
+          .to eq(Absorb::Capture::DEFAULT_KINDS.sort)
+      end
+
       it 'reports a capture that holds fewer objects than the estate' do
         Dir.mktmpdir do |dir|
           result = Absorb::Census.run(client: client_with_monitors(236), covered: 14,
