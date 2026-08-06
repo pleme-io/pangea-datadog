@@ -119,11 +119,59 @@ module Pangea
               found.concat(widget_references(definition, id, payload, monitors, slos))
             end
           end
+          found.concat(dashboard_link_references(capture))
           found.concat(composite_references(capture, monitors))
           found.concat(slo_monitor_references(capture, monitors))
           found.sort_by(&:id)
         rescue Errno::ENOENT
           []
+        end
+
+        # A widget's custom_link pointing at a dashboard that no longer exists.
+        #
+        # Terraform is even blinder to this than to a dead alert_graph: the
+        # reference is a URL inside the widget JSON, so nothing anywhere models
+        # it as a reference at all. It renders as a link that 404s, and the only
+        # person who finds out is whoever clicks it mid-incident.
+        #
+        # Found live: one dashboard links to 48q-nh9-abz, which returns 404.
+        #
+        # GUARDED ON CAPTURE COMPLETENESS, and the guard is weaker here than for
+        # monitors. A link to a dashboard the capture simply did not fetch looks
+        # identical to a link to a deleted one, so a PARTIAL dashboard capture
+        # will produce false positives. That is the same exposure the
+        # alert_graph check already carries, and the reason both are reported as
+        # findings to confirm rather than as facts.
+        DASHBOARD_LINK = %r{/dashboard/([a-z0-9]{3}-[a-z0-9]{3}-[a-z0-9]{3})}
+
+        def dashboard_link_references(capture)
+          known = capture.ids(:dashboards)
+          return [] if known.empty?
+
+          # Counted per (dashboard, target), not per widget. One dashboard
+          # linking to the same dead target from several widgets is ONE thing
+          # to fix, and emitting the identical line twice reads as a bug in the
+          # audit rather than as two widgets.
+          hits = Hash.new(0)
+          titles = {}
+          capture.each(:dashboards) do |id, payload|
+            titles[id] = payload['title'].to_s
+            each_widget(payload['widgets']) do |definition|
+              Array(definition['custom_links']).each do |link|
+                match = DASHBOARD_LINK.match(link['link'].to_s)
+                next if match.nil? || known.include?(match[1])
+
+                hits[[id, match[1]]] += 1
+              end
+            end
+          end
+
+          hits.map do |(id, target), count|
+            widgets = count == 1 ? 'a widget' : "#{count} widgets"
+            Finding.new(id: id, name: titles[id],
+                        detail: "#{widgets} link to dashboard #{target}, " \
+                                'which is not in the estate')
+          end
         end
 
         # A composite monitor names its constituents by id in the query

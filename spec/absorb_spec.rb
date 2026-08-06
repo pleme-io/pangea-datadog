@@ -1900,6 +1900,58 @@ RSpec.describe Absorb do
                                             'alert_id' => alert_id.to_s } }] }
       end
 
+      def linking_dash(id, targets)
+        { 'id' => id, 'title' => "board #{id}",
+          'widgets' => targets.map do |t|
+            { 'definition' => { 'type' => 'note',
+                                'custom_links' => [{ 'link' => "https://app.datadoghq.com/dashboard/#{t}" }] } }
+          end }
+      end
+
+      # Terraform is blinder to this than to a dead alert_graph: the reference
+      # is a URL inside widget JSON, so nothing models it as a reference at all.
+      # It renders as a link that 404s and the only person who finds out is
+      # whoever clicks it mid-incident. Found live: one dashboard links to
+      # 48q-nh9-abz, confirmed 404.
+      it 'reports a widget linking to a dashboard that is not in the estate' do
+        cap = capture_with(monitors: {})
+        cap.write(:dashboards, 'aaa-bbb-ccc', linking_dash('aaa-bbb-ccc', %w[zzz-yyy-xxx]))
+        result = described_class.run(cap)
+
+        expect(result).not_to be_ok
+        expect(result.dangling.first.detail).to include('zzz-yyy-xxx')
+      end
+
+      it 'passes a link to a dashboard that exists' do
+        cap = capture_with(monitors: {})
+        cap.write(:dashboards, 'aaa-bbb-ccc', linking_dash('aaa-bbb-ccc', %w[ddd-eee-fff]))
+        cap.write(:dashboards, 'ddd-eee-fff', { 'id' => 'ddd-eee-fff', 'title' => 'target', 'widgets' => [] })
+
+        expect(described_class.run(cap).dangling).to be_empty
+      end
+
+      # One dashboard linking to the same dead target from several widgets is
+      # ONE thing to fix. Emitting the identical line twice reads as a bug in
+      # the audit rather than as two widgets, which is what it did at first.
+      it 'counts one finding per dashboard and target, naming how many widgets' do
+        cap = capture_with(monitors: {})
+        cap.write(:dashboards, 'aaa-bbb-ccc', linking_dash('aaa-bbb-ccc', %w[zzz-yyy-xxx zzz-yyy-xxx]))
+        result = described_class.run(cap)
+
+        expect(result.dangling.size).to eq(1)
+        expect(result.dangling.first.detail).to include('2 widgets link to')
+      end
+
+      # THE FALSE-POSITIVE GUARD, and this check's real risk: a link to a
+      # dashboard the capture simply never fetched is indistinguishable from a
+      # link to a deleted one. With no dashboards captured there is nothing to
+      # compare against, so nothing is claimed.
+      it 'claims nothing about links when no dashboards were captured' do
+        cap = capture_with(monitors: { '1' => { 'id' => 1, 'name' => 'live' } })
+
+        expect(described_class.run(cap).dangling).to be_empty
+      end
+
       it 'reports a widget pointing at a monitor that is not in the estate' do
         cap = capture_with(monitors: { '1' => { 'id' => 1, 'name' => 'live' } })
         cap.write(:dashboards, 'd1', dash('d1', 999))
