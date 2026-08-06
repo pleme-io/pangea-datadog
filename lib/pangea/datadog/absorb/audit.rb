@@ -250,7 +250,7 @@ module Pangea
         # name attributes (@Path, @Method, @RequestDuration) that no log
         # carries, because the log stream that fed them is gone. Two are
         # outright misspellings -- akeyles.path.derive_fragment, and
-        # akeyless.access_satus_ok.
+        # a misspelt metric name.
         #
         # Reported, not gated: it is dead weight rather than breakage, the same
         # call as an empty dashboard. It is worth surfacing anyway because

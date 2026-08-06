@@ -17,7 +17,7 @@ module Pangea
       # provider, identical for every organisation, and making it configurable
       # would invite a user to describe the provider incorrectly.
       #
-      # Pattern follows akeyless-environments tools/bucketsweep/config.go, the
+      # Pattern follows the org's live keyway reference implementation, the
       # live merged keyway reference:
       #
       #   read -> strict decode -> validate -> return, one entry point
@@ -36,6 +36,7 @@ module Pangea
         SCHEMA = {
           'site' => :string,
           'account' => :string,
+          'template_prefix' => :string,
           'credentials' => {
             'source' => :string,
             'dir' => :string,
@@ -132,7 +133,7 @@ module Pangea
         def app_key_path = File.join(credential_dir, dig('credentials', 'app_key_file'))
 
         # sops is the fleet default. The secret PATH convention matches what the
-        # nix profiles already declare (api_key_secret = "datadog/akeyless/api-key"
+        # nix profiles already declare (api_key_secret = "datadog/<org>/api-key"
         # in profiles/darwin-developer/home/default.nix), so one name is used by
         # the deployer and the consumer rather than two that must be kept in sync.
         def credential_source = dig('credentials', 'source')
@@ -157,6 +158,17 @@ module Pangea
 
         def monitors_group_tag = dig('grouping', 'monitors_by_tag')
         def group_fallback = dig('grouping', 'fallback')
+
+        # The prefix for emitted shard template names. Defaults to something
+        # org-neutral: this engine ships in a public gem and must not carry one
+        # organisation's name in the code it generates. It was hardcoded, so
+        # every shard emitted for ANY estate was named for a single customer.
+        DEFAULT_TEMPLATE_PREFIX = 'pangea_datadog'
+
+        def template_prefix
+          value = @raw['template_prefix']
+          value.nil? || value.to_s.empty? ? DEFAULT_TEMPLATE_PREFIX : value.to_s
+        end
 
         def repair_tags? = dig('tag_repair', 'enabled')
         def strip_list_repr? = dig('tag_repair', 'strip_list_repr')

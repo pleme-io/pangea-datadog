@@ -251,6 +251,36 @@ RSpec.describe Absorb do
   # This drives ONE capture through BOTH shipped configs and asserts the outputs
   # differ exactly as each config dictates. If the engine ever bakes in an
   # assumption about one organisation, a differential test is what notices.
+  # The engine ships in a PUBLIC gem. A hardcoded customer name in the code it
+  # generates is both a generality bug -- every estate got shards named for one
+  # organisation -- and someone else's name in source we publish.
+  describe 'the emitted template prefix' do
+    it 'defaults to something org-neutral when no config is given' do
+      expect(Absorb::Rules.none.template_prefix).to eq('pangea_datadog')
+    end
+
+    it 'takes the prefix from config when one is supplied' do
+      cfg = Absorb::Config.load(File.expand_path('../config/akeyless.yaml', __dir__))
+      expect(Absorb::Rules.from(cfg).template_prefix).to eq('akeyless_datadog')
+    end
+
+    it 'falls back to the default when the key is absent from a config' do
+      cfg = Absorb::Config.load(File.expand_path('../config/example-other-org.yaml', __dir__))
+      expect(cfg.template_prefix).to eq('pangea_datadog')
+    end
+
+    # The whole point: no organisation name survives in the shipped engine.
+    it 'leaves no customer name in any file the gem ships' do
+      spec = Gem::Specification.load(File.expand_path('../pangea-datadog.gemspec', __dir__))
+      offenders = spec.files.select do |f|
+        path = File.expand_path("../#{f}", __dir__)
+        File.file?(path) && File.read(path).match?(/akeyless/i)
+      end
+
+      expect(offenders).to be_empty
+    end
+  end
+
   describe 'the same capture under both shipped configs' do
     around { |example| Dir.mktmpdir { |dir| @dir = dir; example.run } }
 
@@ -1944,7 +1974,7 @@ RSpec.describe Absorb do
       _imports, out = emit_all
 
       expect(File.read(File.join(out, 'shards', 'monitors.rb')))
-        .to include('template :akeyless_datadog_monitors do')
+        .to include("template :#{rules.template_prefix}_monitors do")
     end
 
     # verify must not load them: they are entry points, not declarations, and

@@ -11,7 +11,7 @@ module Pangea
       # machine-readable record of what it did, so a CI step or a reviewer can
       # consume the outcome without scraping stdout.
       #
-      # Shape follows the live reference, akeyless-environments
+      # Shape follows the org's live keyway reference implementation,
       # tools/bucketsweep/outcome.go: a flat envelope (tool, command, status,
       # timestamp, target) plus a command-specific `findings` object, written to
       # <dir>/<command>-<target>-<timestamp>.json.

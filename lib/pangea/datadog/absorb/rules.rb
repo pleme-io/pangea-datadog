@@ -33,6 +33,7 @@ module Pangea
           repair: { enabled: false, list_repr: true, separator_space: true },
           group_tag: nil,
           group_fallback: 'unclassified',
+          template_prefix: 'pangea_datadog',
           archetypes: []
         }.freeze
 
@@ -106,6 +107,16 @@ module Pangea
 
         # ---- dashboards ---------------------------------------------------
 
+        # The emitted shard's template name prefix.
+        #
+        # This was hardcoded to one organisation's name in emit.rb, so every
+        # shard this engine produced for ANY estate carried that customer's
+        # name. The engine is otherwise general -- a second
+        # shipped config exists precisely to prove that -- and a hardcoded
+        # customer name in generated output is both a generality bug and, in a
+        # public gem, someone else's name in our source.
+        def template_prefix = @rules[:template_prefix]
+
         def retire_empty? = @rules[:retire_empty]
         def dedupe_identical? = @rules[:dedupe]
 
@@ -167,6 +178,7 @@ module Pangea
             },
             group_tag: config.monitors_group_tag,
             group_fallback: config.group_fallback,
+            template_prefix: config.template_prefix,
             archetypes: config.archetypes.map do |a|
               Archetype.new(
                 name: a['name'],

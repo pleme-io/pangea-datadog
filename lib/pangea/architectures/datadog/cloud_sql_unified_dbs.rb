@@ -5,9 +5,9 @@ module Pangea
     module Datadog
       # Rung 3: a real archetype, derived from the estate rather than imagined.
       #
-      # Five boards in the akeyless estate -- DBK Staging, DBK Staging
-      # (Estimation), WMT Staging, WMT Production (Estimation) and DBK
-      # Production (Estimation) -- are the same dashboard five times over: four
+      # Five boards in the source estate -- staging and production variants
+      # across several tenants, some of them estimation copies -- are the same
+      # dashboard five times over: four
       # CloudSQL timeseries, same metrics, same order, same layout. Twenty
       # duplicated widget bodies collapse to one spec plus five declarations,
       # and `pangea-datadog-absorb verify` proves the collapse changed nothing.
@@ -27,7 +27,7 @@ module Pangea
       # refactor that claims to be behaviour-preserving.
       #
       # A caution from the same estate: the other apparent family, the six
-      # "Akeyless - Tenant <X> Overview" boards, is NOT an archetype. Those
+      # per-tenant overview boards, is NOT an archetype. Those
       # share a convention -- the same template variables, an overview KPI
       # group, then per-cloud AWS/GCP/Azure groups -- but range from 42 to 97
       # widgets over entirely different metrics. A shared skeleton is not a

@@ -213,7 +213,7 @@ module Pangea
         # A shard name lives in TWO namespaces with different rules, and
         # deriving both from one string broke the second: the chart needs an
         # RFC 1123 DNS label (hyphens), Ruby needs a valid identifier
-        # (underscores). `template :akeyless_datadog_dashboards-archetype do`
+        # (underscores). `template :<prefix>_dashboards-archetype do`
         # is not a parse error -- it reads as SYMBOL MINUS METHOD CALL and dies
         # at runtime with "undefined local variable or method 'archetype'",
         # which is why `ruby -c` waved it through.
@@ -228,7 +228,7 @@ module Pangea
             #{HEADER}
             require 'pangea-datadog'
 
-            template :akeyless_datadog_#{ruby_ident(shard)} do
+            template :#{rules.template_prefix}_#{ruby_ident(shard)} do
               provider :datadog,
                        api_key: ENV.fetch('DD_API_KEY', ''),
                        app_key: ENV.fetch('DD_APP_KEY', ''),
@@ -594,7 +594,7 @@ module Pangea
         # ---- naming ------------------------------------------------------
 
         # Names must be stable across runs and unique across the estate. Datadog
-        # titles collide (five boards in one estate are all "Akeyless GW"), so the
+        # titles collide (five boards in one estate share a title), so the
         # id is folded in as a suffix rather than trusted alone.
         def resource_slug(title, id)
           base = title.to_s.downcase.gsub(/[^a-z0-9]+/, '_').gsub(/\A_+|_+\z/, '')

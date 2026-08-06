@@ -1,5 +1,6 @@
 site: datadoghq.com
 account: akeyless
+template_prefix: akeyless_datadog
 
 credentials:
   # sops-native. Pangea::Secrets.resolve tries, in order:

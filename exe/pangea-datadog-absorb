@@ -60,7 +60,7 @@ parser = OptionParser.new do |o|
     lives in --config; without one, absorb makes the minimum judgement.
 
   TEXT
-  o.on('--config PATH', 'typed YAML config (see config/akeyless.yaml)') { |v| options[:config] = v }
+  o.on('--config PATH', 'typed YAML config (see config/example-other-org.yaml)') { |v| options[:config] = v }
   o.on('--root DIR', 'capture directory (default ./estate)') { |v| options[:root] = v }
   o.on('--out DIR', 'generated code directory (default ./generated; gate defaults to a temp dir)') do |v|
     options[:out] = v
