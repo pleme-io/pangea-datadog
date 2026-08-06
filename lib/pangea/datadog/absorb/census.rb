@@ -123,8 +123,22 @@ module Pangea
            'org-level singleton, not per-object config'],
           [/\Adatadog_(api_key|application_key|app_key)/,
            'credential material, deliberately never captured'],
-          [/\Adatadog_(appsec|csm_threats|cloud_workload_security|cloud_configuration|compliance|security_monitoring|security_notification|sensitive_data_scanner)/,
-           'security/compliance surface the app key cannot read (403); blocked on key scope, not on absorb'],
+          # MEASURED, and the two halves need opposite responses. Datadog
+          # returns two different 403 bodies: the RBAC layer says "Failed
+          # permission authorization checks", the product layer returns a bare
+          # Forbidden. Cross-referencing the key's own 233 scopes against each
+          # 403 splits them, and treating both as "widen the key" would have
+          # been wrong for half.
+          [/\Adatadog_security_monitoring/,
+           'Cloud SIEM is not enabled for this org: the key already holds ' \
+           'security_monitoring_rules_read and the role grants it, yet the route 403s ' \
+           'and the signals route 404s. Widening the key changes nothing'],
+          [/\Adatadog_sensitive_data_scanner/,
+           'scope-blocked, fixable: needs data_scanner_read, which the owning role does not ' \
+           'grant today. The permission exists and is unrestricted'],
+          [/\Adatadog_(appsec|csm_threats|cloud_workload_security|cloud_configuration|compliance|security_notification)/,
+           'security/compliance surface not measured; CSM posture findings ARE readable with ' \
+           'this key and hold zero, so the product family is partly enabled and partly absent'],
           [/\Adatadog_(aws_cur_config|azure_uc_config|gcp_uc_config|cost_budget|custom_allocation)/,
            'cloud-cost management, a separate domain from observability config'],
           [/\Adatadog_synthetics/,
