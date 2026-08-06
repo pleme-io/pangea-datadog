@@ -51,8 +51,8 @@ module Pangea
 
         Finding = Struct.new(:id, :name, :detail, keyword_init: true)
 
-        Result = Struct.new(:broken, :dangling, :silent, :dead, :empty_dashboards, :clusters,
-                            :monitors, :diagnosed, :metrics_age_days, keyword_init: true) do
+        Result = Struct.new(:broken, :dangling, :silent, :dead, :empty_dashboards, :disabled_pipelines,
+                            :clusters, :monitors, :diagnosed, :metrics_age_days, keyword_init: true) do
           # `dead` counts. A monitor whose metric stopped reporting cannot fire,
           # so it is a defect in exactly the way `broken` is -- the distinction
           # this audit turns on is CAN IT EVALUATE, and this one cannot.
@@ -94,6 +94,7 @@ module Pangea
               'metricsAgeDays' => metrics_age_days,
               'deadMonitors' => dead.map { |f| { 'id' => f.id, 'detail' => f.detail } },
               'emptyDashboards' => empty_dashboards.map { |f| { 'id' => f.id, 'detail' => f.detail } },
+              'disabledPipelines' => disabled_pipelines.map { |f| { 'id' => f.id, 'detail' => f.detail } },
               'dangling' => dangling.size,
               'brokenMonitors' => broken.map { |f| { 'id' => f.id, 'detail' => f.detail } },
               'danglingReferences' => dangling.map { |f| { 'id' => f.id, 'detail' => f.detail } },
@@ -105,7 +106,7 @@ module Pangea
             lines = ["audited #{monitors} monitors, broken #{broken.size}, " \
                      "dangling #{dangling.size}, dead #{diagnosed? ? dead.size : 'not-checked'}, " \
                      "empty #{diagnosed? ? empty_dashboards.size : 'not-checked'}, " \
-                     "silent #{silent.size}"]
+                     "disabled #{disabled_pipelines.size}, silent #{silent.size}"]
             broken.each { |f| lines << "  BROKEN #{f.id} #{f.name} -- #{f.detail}" }
             dangling.each { |f| lines << "  DANGLING #{f.id} #{f.name} -- #{f.detail}" }
             dead.each { |f| lines << "  DEAD #{f.id} #{f.name} -- #{f.detail}" }
@@ -113,6 +114,7 @@ module Pangea
             unless empty_dashboards.empty?
               lines << '  (empty is clutter, not breakage: it does not fail the gate)'
             end
+            disabled_pipelines.each { |f| lines << "  DISABLED #{f.id} #{f.name} -- #{f.detail}" }
             unless diagnosed?
               lines << '  SILENCE NOT DIAGNOSED -- without --active-metrics every silent monitor ' \
                        'is reported as healthy, including any that can no longer fire'
@@ -155,6 +157,7 @@ module Pangea
           Result.new(broken: broken.sort_by(&:id), dangling: dangling_references(capture, slos),
                      silent: still_silent.sort_by { |s| s[:since].to_s }, dead: dead,
                      empty_dashboards: empty_dashboards(capture, active_metrics),
+                     disabled_pipelines: disabled_pipelines(capture),
                      diagnosed: !active_metrics.nil?, metrics_age_days: metrics_age_days,
                      clusters: cluster(still_silent), monitors: monitors)
         end
@@ -193,6 +196,38 @@ module Pangea
             end
           end
           [alive, dead.sort_by(&:id)]
+        end
+
+        # A CUSTOM logs pipeline that is switched off. Its processors do not
+        # run, so every attribute it would have extracted is simply absent, and
+        # anything downstream that filters on those attributes matches nothing
+        # and reports zero -- looking configured and producing nothing.
+        #
+        # All three of this estate's custom pipelines are disabled, so no
+        # custom log processing happens at all. That may well be deliberate,
+        # which is why it does NOT fail the gate; it is reported because it is
+        # invisible otherwise and because it is the kind of thing that explains
+        # other findings.
+        #
+        # Integration pipelines are excluded: Datadog ships them switched off
+        # by default and enabling every one of them is nobody's intent.
+        def disabled_pipelines(capture)
+          found = []
+          capture.each(:logs_pipelines) do |id, payload|
+            next if payload['is_read_only']
+            next if payload['is_enabled']
+
+            found << Finding.new(id: id, name: payload['name'].to_s,
+                                 detail: begin
+                                   n = Array(payload['processors']).size
+                                   "custom pipeline is disabled, so its #{n} " \
+                                     "#{n == 1 ? 'processor never runs' : 'processors never run'} " \
+                                     'and the attributes they extract do not exist'
+                                 end)
+          end
+          found.sort_by(&:id)
+        rescue Errno::ENOENT
+          []
         end
 
         # A dashboard whose EVERY queried metric has stopped reporting. It

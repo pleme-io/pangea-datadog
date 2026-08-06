@@ -2138,6 +2138,62 @@ RSpec.describe Absorb do
       end
     end
 
+    describe 'custom pipelines that are switched off' do
+      def pipeline(id, name, enabled:, read_only:, procs: 1)
+        { 'id' => id, 'name' => name, 'is_enabled' => enabled, 'is_read_only' => read_only,
+          'filter' => { 'query' => '' },
+          'processors' => Array.new(procs) { { 'type' => 'grok-parser' } } }
+      end
+
+      # A disabled custom pipeline extracts nothing, so anything filtering on
+      # the attributes it would have created matches nothing and reports zero
+      # -- looking configured and producing nothing. All three of this estate's
+      # custom pipelines are off, which is invisible anywhere else.
+      it 'reports a disabled custom pipeline' do
+        cap = capture_with(monitors: {})
+        cap.write(:logs_pipelines, 'p1', pipeline('p1', 'Access Logs', enabled: false, read_only: false))
+        result = described_class.run(cap)
+
+        expect(result.disabled_pipelines.map(&:id)).to eq(['p1'])
+        expect(result.disabled_pipelines.first.detail).to include('processor never runs')
+      end
+
+      # Datadog ships integration pipelines switched off by default, so
+      # flagging those would report dozens of non-findings.
+      it 'ignores a disabled integration pipeline' do
+        cap = capture_with(monitors: {})
+        cap.write(:logs_pipelines, 'p1', pipeline('p1', 'glog', enabled: false, read_only: true))
+
+        expect(described_class.run(cap).disabled_pipelines).to be_empty
+      end
+
+      it 'ignores an enabled custom pipeline' do
+        cap = capture_with(monitors: {})
+        cap.write(:logs_pipelines, 'p1', pipeline('p1', 'Access Logs', enabled: true, read_only: false))
+
+        expect(described_class.run(cap).disabled_pipelines).to be_empty
+      end
+
+      # Switching a pipeline off may be entirely deliberate, so it is reported
+      # and does not gate.
+      it 'does not fail the gate on a deliberate choice' do
+        cap = capture_with(monitors: {})
+        cap.write(:logs_pipelines, 'p1', pipeline('p1', 'Access Logs', enabled: false, read_only: false))
+        result = described_class.run(cap)
+
+        expect(result.disabled_pipelines.size).to eq(1)
+        expect(result).to be_ok
+      end
+
+      it 'pluralises the processor count' do
+        cap = capture_with(monitors: {})
+        cap.write(:logs_pipelines, 'p1',
+                  pipeline('p1', 'Access Logs', enabled: false, read_only: false, procs: 3))
+
+        expect(described_class.run(cap).disabled_pipelines.first.detail).to include('3 processors never run')
+      end
+    end
+
     describe 'dashboards that render blank' do
       def board(id, queries)
         { 'id' => id, 'title' => "board #{id}",
