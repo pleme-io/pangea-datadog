@@ -2201,6 +2201,57 @@ RSpec.describe Absorb do
       end
     end
 
+    describe 'a monitor that is broken AND dead' do
+      # The dead check walks the SILENT list, and a broken monitor is usually
+      # not silent, so it never reached it. The audit therefore reported such a
+      # monitor only as broken -- and that changes the decision: repair one
+      # whose metric still reports, delete one whose metric is gone.
+      it 'says so when repairing a broken monitor would still leave it silent' do
+        cap = capture_with(monitors: {})
+        cap.write(:monitors, '1', { 'id' => 1, 'name' => 'svc', 'type' => 'service check',
+                                    'query' => 'avg(last_5m):avg:gone.metric{*} > 1',
+                                    'message' => 'x' })
+        result = described_class.run(cap, active_metrics: ['live.metric'])
+
+        expect(result.broken.first.detail).to include('still cannot fire')
+      end
+
+      it 'stays quiet when the broken monitor metric still reports' do
+        cap = capture_with(monitors: {})
+        cap.write(:monitors, '1', { 'id' => 1, 'name' => 'svc', 'type' => 'service check',
+                                    'query' => 'avg(last_5m):avg:live.metric{*} > 1',
+                                    'message' => 'x' })
+        result = described_class.run(cap, active_metrics: ['live.metric'])
+
+        expect(result.broken.first.detail).not_to include('still cannot fire')
+      end
+
+      # THE FALSE POSITIVE THIS MUST NOT PRODUCE, and it nearly reached the
+      # operator as "delete monitor 40998683". A service check names a CHECK,
+      # not a metric, and checks never appear in /api/v1/metrics -- so read
+      # naively every service check looks dead. Its query has no tag brace, so
+      # query_metrics extracts nothing and no claim is made. The real monitor is
+      # healthy: overall_state OK.
+      it 'never calls a service check dead for being absent from the metric list' do
+        cap = capture_with(monitors: {})
+        cap.write(:monitors, '1', { 'id' => 1, 'name' => 'ntp', 'type' => 'service check',
+                                    'query' => '"ntp.in_sync".over("*").last(2).count_by_status()',
+                                    'overall_state' => 'OK', 'message' => 'x' })
+        result = described_class.run(cap, active_metrics: ['unrelated.metric'])
+
+        expect(result.broken.map(&:detail).join).not_to include('still cannot fire')
+      end
+
+      it 'claims nothing without the metric list' do
+        cap = capture_with(monitors: {})
+        cap.write(:monitors, '1', { 'id' => 1, 'name' => 'svc', 'type' => 'service check',
+                                    'query' => 'avg(last_5m):avg:gone.metric{*} > 1',
+                                    'message' => 'x' })
+
+        expect(described_class.run(cap).broken.map(&:detail).join).not_to include('still cannot fire')
+      end
+    end
+
     describe 'logs metrics that never report' do
       it 'reports a defined metric Datadog has not seen' do
         cap = capture_with(monitors: {})

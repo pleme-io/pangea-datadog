@@ -161,6 +161,7 @@ module Pangea
           end
 
           still_silent, dead = split_silence(capture, silent, active_metrics)
+          broken = annotate_dead_broken(broken, capture, active_metrics)
 
           Result.new(broken: broken.sort_by(&:id), dangling: dangling_references(capture, slos),
                      silent: still_silent.sort_by { |s| s[:since].to_s }, dead: dead,
@@ -169,6 +170,42 @@ module Pangea
                      dead_metrics: dead_metrics(capture, active_metrics),
                      diagnosed: !active_metrics.nil?, metrics_age_days: metrics_age_days,
                      clusters: cluster(still_silent), monitors: monitors)
+        end
+
+        # A monitor can be BROKEN and DEAD at once, and the audit reported only
+        # the first: the dead check walks the silent list, and a broken monitor
+        # is usually not silent, so it never reached it. That gap changes the
+        # operator's decision -- repair a broken monitor whose metric still
+        # reports, delete one whose metric is gone.
+        #
+        # THE FALSE POSITIVE THIS MUST NOT PRODUCE. A service check names a
+        # CHECK, not a metric, and checks never appear in the metric list. Read
+        # naively, every service check looks dead. query_metrics only matches an
+        # identifier followed by a tag brace, which service-check syntax
+        # (`"ntp.in_sync".over("*").last(2)`) does not have, so it extracts
+        # nothing and no claim is made. Monitor 40998683 is exactly that shape
+        # and is healthy -- overall_state OK -- despite ntp.in_sync being absent
+        # from /api/v1/metrics.
+        def annotate_dead_broken(broken, capture, active_metrics)
+          return broken if active_metrics.nil?
+
+          active = active_metrics.to_set
+          broken.map do |finding|
+            payload = begin
+              capture.read(:monitors, finding.id)
+            rescue Errno::ENOENT
+              nil
+            end
+            next finding if payload.nil?
+
+            names = query_metrics(payload['query'])
+            next finding if names.empty? || names.any? { |name| active.include?(name) }
+
+            Finding.new(id: finding.id, name: finding.name,
+                        detail: "#{finding.detail}; ALSO its metric " \
+                                "#{names.join(', ')} has not reported recently, so repairing " \
+                                'this yields a monitor that still cannot fire')
+          end
         end
 
         # A THIRD CATEGORY, and the reason this matters.
