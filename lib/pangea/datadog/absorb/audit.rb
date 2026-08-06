@@ -51,8 +51,8 @@ module Pangea
 
         Finding = Struct.new(:id, :name, :detail, keyword_init: true)
 
-        Result = Struct.new(:broken, :dangling, :silent, :dead, :clusters, :monitors,
-                            :diagnosed, keyword_init: true) do
+        Result = Struct.new(:broken, :dangling, :silent, :dead, :empty_dashboards, :clusters,
+                            :monitors, :diagnosed, keyword_init: true) do
           # `dead` counts. A monitor whose metric stopped reporting cannot fire,
           # so it is a defect in exactly the way `broken` is -- the distinction
           # this audit turns on is CAN IT EVALUATE, and this one cannot.
@@ -72,6 +72,7 @@ module Pangea
               'dead' => dead.size,
               'silenceDiagnosed' => diagnosed?,
               'deadMonitors' => dead.map { |f| { 'id' => f.id, 'detail' => f.detail } },
+              'emptyDashboards' => empty_dashboards.map { |f| { 'id' => f.id, 'detail' => f.detail } },
               'dangling' => dangling.size,
               'brokenMonitors' => broken.map { |f| { 'id' => f.id, 'detail' => f.detail } },
               'danglingReferences' => dangling.map { |f| { 'id' => f.id, 'detail' => f.detail } },
@@ -82,10 +83,15 @@ module Pangea
           def to_s
             lines = ["audited #{monitors} monitors, broken #{broken.size}, " \
                      "dangling #{dangling.size}, dead #{diagnosed? ? dead.size : 'not-checked'}, " \
+                     "empty #{diagnosed? ? empty_dashboards.size : 'not-checked'}, " \
                      "silent #{silent.size}"]
             broken.each { |f| lines << "  BROKEN #{f.id} #{f.name} -- #{f.detail}" }
             dangling.each { |f| lines << "  DANGLING #{f.id} #{f.name} -- #{f.detail}" }
             dead.each { |f| lines << "  DEAD #{f.id} #{f.name} -- #{f.detail}" }
+            empty_dashboards.each { |f| lines << "  EMPTY #{f.id} #{f.name} -- #{f.detail}" }
+            unless empty_dashboards.empty?
+              lines << '  (empty is clutter, not breakage: it does not fail the gate)'
+            end
             unless diagnosed?
               lines << '  SILENCE NOT DIAGNOSED -- without --active-metrics every silent monitor ' \
                        'is reported as healthy, including any that can no longer fire'
@@ -121,6 +127,7 @@ module Pangea
 
           Result.new(broken: broken.sort_by(&:id), dangling: dangling_references(capture, slos),
                      silent: still_silent.sort_by { |s| s[:since].to_s }, dead: dead,
+                     empty_dashboards: empty_dashboards(capture, active_metrics),
                      diagnosed: !active_metrics.nil?,
                      clusters: cluster(still_silent), monitors: monitors)
         end
@@ -159,6 +166,57 @@ module Pangea
             end
           end
           [alive, dead.sort_by(&:id)]
+        end
+
+        # A dashboard whose EVERY queried metric has stopped reporting. It
+        # renders blank, and a blank dashboard is worse than no dashboard
+        # because someone opens it during an incident expecting data.
+        #
+        # EVERY, not any, and the difference is the whole finding. 15 of this
+        # estate's 27 dashboards with metric queries reference at least one dead
+        # metric, and reporting those would be crying wolf -- most are cloned
+        # out-of-the-box integration boards (AWS, Kubernetes) carrying a few
+        # widgets for metrics nobody uses, which is normal. Requiring all of
+        # them narrows it to 7, and each of those 7 is genuinely blank.
+        #
+        # NOT A GATE FAILURE. An empty dashboard is clutter; a monitor that
+        # cannot fire is breakage. Only the second kind counts.
+        def empty_dashboards(capture, active_metrics)
+          return [] if active_metrics.nil?
+
+          active = active_metrics.to_set
+          found = []
+          capture.each(:dashboards) do |id, payload|
+            names = dashboard_metrics(payload)
+            next if names.empty?
+            next unless names.all? { |name| !active.include?(name) }
+
+            found << Finding.new(id: id, name: payload['title'].to_s,
+                                 detail: "its #{names.size} queried " \
+                                         "#{names.size == 1 ? 'metric has' : 'metrics have'} " \
+                                         'stopped reporting -- this dashboard renders blank')
+          end
+          found.sort_by(&:id)
+        rescue Errno::ENOENT
+          []
+        end
+
+        def dashboard_metrics(payload)
+          queries = []
+          collect_queries(payload['widgets'], queries)
+          queries.flat_map { |q| query_metrics(q) }.uniq
+        end
+
+        # Widget queries hide at every depth and under several shapes; the one
+        # thing they share is the key `q`.
+        def collect_queries(node, out)
+          case node
+          when Hash
+            node.each do |key, value|
+              key.to_s == 'q' && value.is_a?(String) ? out << value : collect_queries(value, out)
+            end
+          when Array then node.each { |item| collect_queries(item, out) }
+          end
         end
 
         # The metric is the dotted identifier immediately before the tag brace:

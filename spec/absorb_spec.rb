@@ -1966,6 +1966,63 @@ RSpec.describe Absorb do
       end
     end
 
+    describe 'dashboards that render blank' do
+      def board(id, queries)
+        { 'id' => id, 'title' => "board #{id}",
+          'widgets' => queries.map { |q| { 'definition' => { 'requests' => [{ 'q' => q }] } } } }
+      end
+
+      # EVERY metric dead, not any, and the difference is the whole finding.
+      # 15 of this estate's 27 dashboards with metric queries reference at
+      # least one dead metric; reporting those would be crying wolf, because
+      # most are cloned out-of-the-box integration boards carrying a few
+      # widgets nobody uses. Requiring all of them narrows it to 7 genuinely
+      # blank dashboards.
+      it 'reports a dashboard whose every queried metric has stopped reporting' do
+        cap = capture_with(monitors: {})
+        cap.write(:dashboards, 'd1', board('d1', ['avg:gone.one{*}', 'avg:gone.two{*}']))
+        result = described_class.run(cap, active_metrics: ['live.metric'])
+
+        expect(result.empty_dashboards.map(&:id)).to eq(['d1'])
+        expect(result.empty_dashboards.first.detail).to include('renders blank')
+      end
+
+      it 'says nothing about a dashboard with only some metrics dead' do
+        cap = capture_with(monitors: {})
+        cap.write(:dashboards, 'd1', board('d1', ['avg:gone.one{*}', 'avg:live.metric{*}']))
+
+        expect(described_class.run(cap, active_metrics: ['live.metric']).empty_dashboards).to be_empty
+      end
+
+      # An empty dashboard is clutter; a monitor that cannot fire is breakage.
+      # Only the second kind counts against the gate.
+      it 'does not fail the gate on clutter' do
+        cap = capture_with(monitors: {})
+        cap.write(:dashboards, 'd1', board('d1', ['avg:gone.one{*}']))
+        result = described_class.run(cap, active_metrics: ['live.metric'])
+
+        expect(result.empty_dashboards.size).to eq(1)
+        expect(result).to be_ok
+      end
+
+      it 'ignores a dashboard that queries no metric at all' do
+        cap = capture_with(monitors: {})
+        cap.write(:dashboards, 'd1', { 'id' => 'd1', 'title' => 'notes',
+                                       'widgets' => [{ 'definition' => { 'type' => 'note' } }] })
+
+        expect(described_class.run(cap, active_metrics: ['live.metric']).empty_dashboards).to be_empty
+      end
+
+      it 'claims nothing without the metric list' do
+        cap = capture_with(monitors: {})
+        cap.write(:dashboards, 'd1', board('d1', ['avg:gone.one{*}']))
+        result = described_class.run(cap)
+
+        expect(result.empty_dashboards).to be_empty
+        expect(result.to_s).to include('empty not-checked')
+      end
+    end
+
     describe 'dangling references' do
       def dash(id, alert_id)
         { 'id' => id, 'title' => "board #{id}",
