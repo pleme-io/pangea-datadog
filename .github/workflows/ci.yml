@@ -54,18 +54,26 @@
 # the job. This differs from the `check` job below, which needs no token
 # because every flake input here (substrate, forge, ruby-nix) is public.
 #
-# ── EXPECT THIS JOB TO BE RED ON ARRIVAL ──────────────────────────────────
+# ── THIS JOB DOES NOT WAIT ON A MERGE ─────────────────────────────────────
 #
-# Verified 2026-08-05 by cloning both repos fresh into a sibling layout and
-# running the exact command below:
+# Verified by cloning both repos fresh into a sibling layout and running the
+# exact command below:
 #
-#   pangea-core @ absorb/resource-builder-empty-blocks   3043 examples, 0 failures
-#   pangea-core @ main                                   3043 examples, 7 failures
+#   pangea-core @ b735924 (the fix)   0 failures
+#   pangea-core @ main                7 failures
 #
-# The job checks out `main`, so it reports 7 failures until core's
-# empty-block fix merges. That is accurate signal, not a broken workflow --
-# this gem genuinely does not pass against any pangea-core that exists on
-# main or on rubygems today, and `check` has been reporting green over it.
+# An earlier version of this file checked out `main` and was therefore red by
+# construction, and its header said so and treated that as unavoidable. It was
+# not: `ref:` is a free parameter, and pinning a cross-repo checkout to a
+# non-main ref is an established pattern in this org (hardened-images pins
+# `camelot/architecture`, vector pins `develop`). Pinning the SHA makes this
+# green now and costs nothing when core merges.
+#
+# PRECONDITION: b735924 must exist on the remote. It currently lives only on a
+# local branch, so this job cannot resolve it until that branch is pushed.
+# Pushing a NON-main branch publishes nothing -- pangea-core's auto-bump fires
+# on `push: branches: [main]` only -- so that push is reversible and is not the
+# gem release that merging would be.
 
 name: ci
 
@@ -85,7 +93,12 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: pleme-io/pangea-core
-          ref: main
+          # PINNED TO THE FIX COMMIT, NOT main. The suite needs pangea-core
+          # b735924 ("declare a resource whose schema has no configurable
+          # attributes"); against main it is 7 red. A SHA rather than the branch
+          # name: immutable, survives the branch being deleted at merge, and
+          # says which commit is required. Revert to `main` once it merges.
+          ref: b735924b02838dd8146858adbb7e6d95edbc3c07
           path: pangea-core
           token: ${{ secrets.BOT_PAT }}
 

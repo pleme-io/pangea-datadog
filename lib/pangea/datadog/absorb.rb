@@ -212,14 +212,30 @@ module Pangea
         Audit.run(Capture.new(root), active_metrics: names, metrics_age_days: age)
       end
 
+      MetricsError = Class.new(StandardError)
+
       # Accepts both shapes. Early files are a bare array of names and carry no
       # provenance at all; a nil age means the audit cannot vouch for freshness
       # and says so rather than assuming it.
+      #
+      # A file that was SUPPLIED but holds no names raises rather than falling
+      # back to the no-file path. Those two are not the same: no file means the
+      # diagnosis was not asked for, and the audit says "not-checked"; a supplied
+      # file that cannot be read means it WAS asked for and could not be
+      # answered. Silently downgrading the second to the first tells someone who
+      # passed --active-metrics that they diagnosed nothing, in a line they have
+      # no reason to re-read.
       def read_active_metrics(path)
         return [nil, nil] if path.nil?
 
         document = JSON.parse(File.read(path))
         return [document, nil] if document.is_a?(Array)
+
+        names = document.is_a?(Hash) ? document['metrics'] : nil
+        unless names.is_a?(Array)
+          raise MetricsError, "#{path} holds no metric names -- expected a JSON array, or an " \
+                              'object with a "metrics" array, as `metrics` writes'
+        end
 
         taken = begin
           Time.parse(document['generatedAt'].to_s)
@@ -227,7 +243,7 @@ module Pangea
           nil
         end
         age = taken.nil? ? nil : ((Time.now.utc - taken) / 86_400).floor
-        [document['metrics'], age]
+        [names, age]
       end
 
       # The actively-reporting metric list, as JSON. This is audit's optional

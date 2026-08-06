@@ -773,6 +773,50 @@ RSpec.describe Absorb do
     end
   end
 
+  # "No file given" and "file given but unreadable" are different answers. The
+  # first means the diagnosis was not asked for, and the audit correctly says
+  # not-checked. The second means it WAS asked for and could not be answered,
+  # and silently downgrading it to the first tells someone who passed
+  # --active-metrics that they diagnosed nothing, in a line they have no reason
+  # to re-read.
+  describe 'reading the active-metrics file' do
+    it 'accepts the documented shape' do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, 'm.json')
+        File.write(path, JSON.generate({ 'generatedAt' => Time.now.utc.iso8601,
+                                         'windowDays' => 30, 'metrics' => %w[a b] }))
+        names, age = Absorb.read_active_metrics(path)
+
+        expect(names).to eq(%w[a b])
+        expect(age).to eq(0)
+      end
+    end
+
+    # Early files predate provenance and are a bare array.
+    it 'accepts a bare array and reports an unknown age' do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, 'm.json')
+        File.write(path, JSON.generate(%w[a b]))
+
+        expect(Absorb.read_active_metrics(path)).to eq([%w[a b], nil])
+      end
+    end
+
+    it 'refuses a supplied file that holds no metric names' do
+      Dir.mktmpdir do |dir|
+        path = File.join(dir, 'm.json')
+        File.write(path, JSON.generate({ 'generatedAt' => '2026-08-06T00:00:00Z' }))
+
+        expect { Absorb.read_active_metrics(path) }
+          .to raise_error(Absorb::MetricsError, /holds no metric names/)
+      end
+    end
+
+    it 'still treats no path at all as not-asked' do
+      expect(Absorb.read_active_metrics(nil)).to eq([nil, nil])
+    end
+  end
+
   describe Absorb::Conform do
     # conform is GREEN on the real estate, which proves nothing about conform.
     # Every check below is driven by a schema built to make it fire, because a
