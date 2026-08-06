@@ -52,7 +52,8 @@ module Pangea
         Finding = Struct.new(:id, :name, :detail, keyword_init: true)
 
         Result = Struct.new(:broken, :dangling, :silent, :dead, :empty_dashboards, :disabled_pipelines,
-                            :clusters, :monitors, :diagnosed, :metrics_age_days, keyword_init: true) do
+                            :dead_metrics, :clusters, :monitors, :diagnosed, :metrics_age_days,
+                            keyword_init: true) do
           # `dead` counts. A monitor whose metric stopped reporting cannot fire,
           # so it is a defect in exactly the way `broken` is -- the distinction
           # this audit turns on is CAN IT EVALUATE, and this one cannot.
@@ -95,6 +96,7 @@ module Pangea
               'deadMonitors' => dead.map { |f| { 'id' => f.id, 'detail' => f.detail } },
               'emptyDashboards' => empty_dashboards.map { |f| { 'id' => f.id, 'detail' => f.detail } },
               'disabledPipelines' => disabled_pipelines.map { |f| { 'id' => f.id, 'detail' => f.detail } },
+              'deadMetrics' => diagnosed? ? dead_metrics.map { |f| { 'id' => f.id } } : nil,
               'dangling' => dangling.size,
               'brokenMonitors' => broken.map { |f| { 'id' => f.id, 'detail' => f.detail } },
               'danglingReferences' => dangling.map { |f| { 'id' => f.id, 'detail' => f.detail } },
@@ -106,7 +108,9 @@ module Pangea
             lines = ["audited #{monitors} monitors, broken #{broken.size}, " \
                      "dangling #{dangling.size}, dead #{diagnosed? ? dead.size : 'not-checked'}, " \
                      "empty #{diagnosed? ? empty_dashboards.size : 'not-checked'}, " \
-                     "disabled #{disabled_pipelines.size}, silent #{silent.size}"]
+                     "disabled #{disabled_pipelines.size}, " \
+                     "deadmetrics #{diagnosed? ? dead_metrics.size : 'not-checked'}, " \
+                     "silent #{silent.size}"]
             broken.each { |f| lines << "  BROKEN #{f.id} #{f.name} -- #{f.detail}" }
             dangling.each { |f| lines << "  DANGLING #{f.id} #{f.name} -- #{f.detail}" }
             dead.each { |f| lines << "  DEAD #{f.id} #{f.name} -- #{f.detail}" }
@@ -115,6 +119,10 @@ module Pangea
               lines << '  (empty is clutter, not breakage: it does not fail the gate)'
             end
             disabled_pipelines.each { |f| lines << "  DISABLED #{f.id} #{f.name} -- #{f.detail}" }
+            dead_metrics.each { |f| lines << "  DEAD METRIC #{f.id} -- #{f.detail}" }
+            unless dead_metrics.empty?
+              lines << '  (a defined logs metric that never reports is billed and produces nothing)'
+            end
             unless diagnosed?
               lines << '  SILENCE NOT DIAGNOSED -- without --active-metrics every silent monitor ' \
                        'is reported as healthy, including any that can no longer fire'
@@ -158,6 +166,7 @@ module Pangea
                      silent: still_silent.sort_by { |s| s[:since].to_s }, dead: dead,
                      empty_dashboards: empty_dashboards(capture, active_metrics),
                      disabled_pipelines: disabled_pipelines(capture),
+                     dead_metrics: dead_metrics(capture, active_metrics),
                      diagnosed: !active_metrics.nil?, metrics_age_days: metrics_age_days,
                      clusters: cluster(still_silent), monitors: monitors)
         end
@@ -196,6 +205,30 @@ module Pangea
             end
           end
           [alive, dead.sort_by(&:id)]
+        end
+
+        # A logs metric the estate DEFINES that Datadog has not seen report.
+        #
+        # The estate defines 8 and 7 of them have never reported: their filters
+        # name attributes (@Path, @Method, @RequestDuration) that no log
+        # carries, because the log stream that fed them is gone. Two are
+        # outright misspellings -- akeyles.path.derive_fragment, and
+        # akeyless.access_satus_ok.
+        #
+        # Reported, not gated: it is dead weight rather than breakage, the same
+        # call as an empty dashboard. It is worth surfacing anyway because
+        # custom logs metrics are billed per metric whether anything queries
+        # them or not, so this one costs money to ignore.
+        def dead_metrics(capture, active_metrics)
+          return [] if active_metrics.nil?
+
+          active = active_metrics.to_set
+          capture.ids(:logs_metrics).reject { |id| active.include?(id.to_s) }.map do |id|
+            Finding.new(id: id.to_s, name: id.to_s,
+                        detail: 'defined but has not reported recently -- it produces nothing')
+          end
+        rescue Errno::ENOENT
+          []
         end
 
         # A CUSTOM logs pipeline that is switched off. Its processors do not

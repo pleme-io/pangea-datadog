@@ -2138,6 +2138,36 @@ RSpec.describe Absorb do
       end
     end
 
+    describe 'logs metrics that never report' do
+      it 'reports a defined metric Datadog has not seen' do
+        cap = capture_with(monitors: {})
+        cap.write(:logs_metrics, 'akeyless.path', { 'id' => 'akeyless.path' })
+        cap.write(:logs_metrics, 'live.one', { 'id' => 'live.one' })
+        result = described_class.run(cap, active_metrics: ['live.one'])
+
+        expect(result.dead_metrics.map(&:id)).to eq(['akeyless.path'])
+        expect(result.to_s).to include('billed and produces nothing')
+      end
+
+      # Dead weight, not breakage -- the same call as an empty dashboard.
+      it 'does not fail the gate' do
+        cap = capture_with(monitors: {})
+        cap.write(:logs_metrics, 'akeyless.path', { 'id' => 'akeyless.path' })
+
+        expect(described_class.run(cap, active_metrics: ['live.one'])).to be_ok
+      end
+
+      it 'claims nothing without the metric list' do
+        cap = capture_with(monitors: {})
+        cap.write(:logs_metrics, 'akeyless.path', { 'id' => 'akeyless.path' })
+        result = described_class.run(cap)
+
+        expect(result.dead_metrics).to be_empty
+        expect(result.to_s).to include('deadmetrics not-checked')
+        expect(result.findings['deadMetrics']).to be_nil
+      end
+    end
+
     describe 'custom pipelines that are switched off' do
       def pipeline(id, name, enabled:, read_only:, procs: 1)
         { 'id' => id, 'name' => name, 'is_enabled' => enabled, 'is_read_only' => read_only,
