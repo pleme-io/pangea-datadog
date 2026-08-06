@@ -69,7 +69,23 @@ module Pangea
           'notebooks' => ['/api/v1/notebooks', 'data']
         }.freeze
 
-        Finding = Struct.new(:type, :count, :code, keyword_init: true)
+        Finding = Struct.new(:type, :count, :code, :suspect, keyword_init: true)
+
+        # Datadog's v2 collections paginate, and the DEFAULT PAGE IS SMALL --
+        # /api/v2/users returns 10 while the account holds 80. The first version
+        # of this census counted the array it got back, so it reported 10 users
+        # and was wrong by a factor of eight. It did not look wrong: 10 is a
+        # perfectly plausible number of users.
+        #
+        # `meta.page.total_count` is the collection size and is what a count
+        # means, so it wins whenever it is present.
+        #
+        # When it is ABSENT the array size is all there is, and a size that is
+        # exactly a common page size is the shape of a silent truncation. That
+        # cannot be resolved from one response, so it is reported as suspect
+        # rather than asserted -- the same rule as everything else here: say
+        # what is known, and say when something is not.
+        COMMON_PAGE_SIZES = [10, 20, 25, 50, 100, 200, 500, 1000].freeze
 
         Result = Struct.new(:gaps, :empty, :unreachable, :unmanageable, :covered,
                             :unprobed, :stale_probes, keyword_init: true) do
@@ -87,7 +103,9 @@ module Pangea
               'gaps' => gaps.size,
               'empty' => empty.size,
               'unreachable' => unreachable.size,
-              'gapDetail' => gaps.map { |f| { 'type' => f.type, 'count' => f.count } },
+              'gapDetail' => gaps.map do |f|
+                { 'type' => f.type, 'count' => f.count, 'countMaybeTruncated' => !f.suspect.nil? && f.suspect }
+              end,
               'unreachableDetail' => unreachable.map { |f| { 'type' => f.type, 'code' => f.code } },
               'unmanageableDetail' => unmanageable.map { |f| { 'type' => f.type, 'count' => f.count } }
             }
@@ -106,7 +124,11 @@ module Pangea
             Array(stale_probes).each do |type|
               lines << "  STALE PROBE #{type} is not declared by this provider -- the probe is dead"
             end
-            gaps.each { |f| lines << "  GAP #{f.type} holds #{f.count}, absorb ignores it" }
+            gaps.each do |f|
+              line = "  GAP #{f.type} holds #{f.count}, absorb ignores it"
+              line += ' -- and that count is exactly a page size, so it may be truncated' if f.suspect
+              lines << line
+            end
             unmanageable.each do |f|
               lines << "  UNMANAGEABLE #{f.type} holds #{f.count}, no provider resource exists"
             end
@@ -136,13 +158,13 @@ module Pangea
           unreachable = []
 
           PROBES.each do |type, (path, key)|
-            code, items = probe(client, path, key)
+            code, items, suspect = probe(client, path, key)
             next unreachable << Finding.new(type: type, code: code) unless code == 200
 
             if items.zero?
               empty << Finding.new(type: type, count: 0)
             else
-              gaps << Finding.new(type: type, count: items)
+              gaps << Finding.new(type: type, count: items, suspect: suspect)
             end
           end
 
@@ -190,7 +212,7 @@ module Pangea
         # abort the whole census on the first endpoint the key cannot read.
         def probe(client, path, key)
           code, body = client.probe(path)
-          return [code, 0] unless code == 200
+          return [code, 0, false] unless code == 200
 
           parsed = begin
             JSON.parse(body)
@@ -198,7 +220,12 @@ module Pangea
             nil
           end
           items = key ? (parsed.is_a?(Hash) ? parsed[key] : nil) : parsed
-          [code, items.is_a?(Array) ? items.size : 0]
+          returned = items.is_a?(Array) ? items.size : 0
+          total = parsed.is_a?(Hash) ? parsed.dig('meta', 'page', 'total_count') : nil
+
+          return [code, total, false] if total.is_a?(Integer)
+
+          [code, returned, COMMON_PAGE_SIZES.include?(returned)]
         end
       end
     end

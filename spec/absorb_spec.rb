@@ -1033,6 +1033,53 @@ RSpec.describe Absorb do
       expect(result).not_to be_ok
     end
 
+    # THE BUG THIS PINS. Datadog's v2 collections paginate and the default page
+    # is small: /api/v2/users returns 10 while the account holds 80. The first
+    # census counted the array it got back and reported 10 users -- wrong by a
+    # factor of eight, and not obviously wrong, because 10 is a plausible
+    # number of users. meta.page.total_count is the collection size.
+    it 'counts the collection, not the page it was handed' do
+      body = JSON.generate({ 'data' => Array.new(10) { |i| { 'id' => i } },
+                             'meta' => { 'page' => { 'total_count' => 80 } } })
+
+      result = Absorb::Census.run(client: client_answering('/api/v2/users' => [200, body]), covered: 14)
+
+      expect(result.gaps.find { |g| g.type == 'datadog_user' }.count).to eq(80)
+    end
+
+    # Without page meta the array size is all there is, and a size that is
+    # exactly a common page size has the shape of a silent truncation. It
+    # cannot be resolved from one response, so it is reported as suspect
+    # rather than asserted.
+    it 'says so when a count is exactly a page size and might be truncated' do
+      body = JSON.generate({ 'data' => Array.new(100) { |i| { 'id' => i } } })
+
+      result = Absorb::Census.run(client: client_answering('/api/v2/users' => [200, body]), covered: 14)
+
+      expect(result.gaps.find { |g| g.type == 'datadog_user' }.suspect).to be(true)
+      expect(result.to_s).to include('may be truncated')
+    end
+
+    it 'does not cry truncation over an ordinary count' do
+      body = JSON.generate({ 'data' => Array.new(7) { |i| { 'id' => i } } })
+
+      result = Absorb::Census.run(client: client_answering('/api/v2/users' => [200, body]), covered: 14)
+
+      expect(result.gaps.find { |g| g.type == 'datadog_user' }.suspect).to be(false)
+      expect(result.to_s).not_to include('may be truncated')
+    end
+
+    # total_count wins even when it is SMALLER than the page, which is what a
+    # filtered collection looks like.
+    it 'trusts total_count over the array in both directions' do
+      body = JSON.generate({ 'data' => Array.new(10) { |i| { 'id' => i } },
+                             'meta' => { 'page' => { 'total_count' => 3 } } })
+
+      result = Absorb::Census.run(client: client_answering('/api/v2/users' => [200, body]), covered: 14)
+
+      expect(result.gaps.find { |g| g.type == 'datadog_user' }.count).to eq(3)
+    end
+
     it 'calls a reachable type with no objects an absence, not a gap' do
       result = Absorb::Census.run(
         client: client_answering('/api/v2/incidents/config/types' => ok([])),
