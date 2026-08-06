@@ -260,10 +260,37 @@ module Pangea
               found.concat(widget_references(definition, id, payload, monitors, slos))
             end
           end
+          found.concat(powerpack_references(capture, monitors, slos))
           found.concat(dashboard_link_references(capture))
           found.concat(composite_references(capture, monitors))
           found.concat(slo_monitor_references(capture, monitors))
           found.sort_by(&:id)
+        rescue Errno::ENOENT
+          []
+        end
+
+        # A POWERPACK's widgets can reference a monitor too, and the audit was
+        # blind to them.
+        #
+        # A powerpack is a reusable widget group embedded into dashboards, so
+        # one dead reference inside it is broken everywhere it is used, not
+        # once. Found live: monitor 106953745 is referenced by two dashboards
+        # AND two powerpacks. The audit reported half of that, which understates
+        # both the blast radius and how long the monitor has been gone.
+        #
+        # Their widgets hang off attributes.group_widget rather than a top-level
+        # `widgets` key, which is why walking dashboards did not reach them.
+        def powerpack_references(capture, monitors, slos)
+          return [] if monitors.empty? && slos.empty?
+
+          found = []
+          capture.each(:powerpacks) do |id, payload|
+            name = payload.dig('attributes', 'name').to_s
+            each_widget(payload.dig('attributes', 'group_widget', 'definition', 'widgets')) do |definition|
+              found.concat(widget_references(definition, id, { 'title' => name }, monitors, slos))
+            end
+          end
+          found
         rescue Errno::ENOENT
           []
         end

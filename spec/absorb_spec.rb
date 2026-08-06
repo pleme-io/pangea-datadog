@@ -2069,6 +2069,44 @@ RSpec.describe Absorb do
                                             'alert_id' => alert_id.to_s } }] }
       end
 
+      # A powerpack is a reusable widget group embedded into dashboards, so one
+      # dead reference inside it is broken everywhere it is used, not once.
+      # Their widgets hang off attributes.group_widget rather than a top-level
+      # `widgets` key, which is why walking dashboards never reached them:
+      # monitor 106953745 is referenced by two dashboards AND two powerpacks,
+      # and the audit was reporting half of that.
+      def pack(id, alert_id)
+        { 'id' => id, 'type' => 'powerpacks',
+          'attributes' => { 'name' => "pack #{id}",
+                            'group_widget' => { 'definition' => { 'widgets' => [
+                              { 'definition' => { 'type' => 'alert_graph', 'alert_id' => alert_id.to_s } }
+                            ] } } } }
+      end
+
+      it 'reports a powerpack widget pointing at a monitor that is not in the estate' do
+        cap = capture_with(monitors: { '1' => { 'id' => 1, 'name' => 'live' } })
+        cap.write(:powerpacks, 'p1', pack('p1', 999))
+        result = described_class.run(cap)
+
+        expect(result).not_to be_ok
+        expect(result.dangling.map(&:id)).to include('p1')
+        expect(result.dangling.first.detail).to include('999')
+      end
+
+      it 'passes a powerpack widget pointing at a monitor that exists' do
+        cap = capture_with(monitors: { '1' => { 'id' => 1, 'name' => 'live' } })
+        cap.write(:powerpacks, 'p1', pack('p1', 1))
+
+        expect(described_class.run(cap).dangling).to be_empty
+      end
+
+      it 'claims nothing about powerpacks when no monitors were captured' do
+        cap = capture_with(monitors: {})
+        cap.write(:powerpacks, 'p1', pack('p1', 999))
+
+        expect(described_class.run(cap).dangling).to be_empty
+      end
+
       def linking_dash(id, targets)
         { 'id' => id, 'title' => "board #{id}",
           'widgets' => targets.map do |t|
