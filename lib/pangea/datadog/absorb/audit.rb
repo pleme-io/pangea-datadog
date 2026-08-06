@@ -52,7 +52,7 @@ module Pangea
         Finding = Struct.new(:id, :name, :detail, keyword_init: true)
 
         Result = Struct.new(:broken, :dangling, :silent, :dead, :empty_dashboards, :clusters,
-                            :monitors, :diagnosed, keyword_init: true) do
+                            :monitors, :diagnosed, :metrics_age_days, keyword_init: true) do
           # `dead` counts. A monitor whose metric stopped reporting cannot fire,
           # so it is a defect in exactly the way `broken` is -- the distinction
           # this audit turns on is CAN IT EVALUATE, and this one cannot.
@@ -63,6 +63,20 @@ module Pangea
           # warning, which reads as "none found" rather than "not checked" --
           # the precise confusion this whole audit exists to avoid.
           def diagnosed? = diagnosed
+
+          # The dead/alive verdict is only as current as the metric list behind
+          # it. An old list calls live metrics dead with exactly the same
+          # confidence as a fresh one, so an unknown or stale age is said out
+          # loud rather than trusted quietly.
+          def stale_metrics_warning
+            if metrics_age_days.nil?
+              '  METRIC LIST AGE UNKNOWN -- it carries no timestamp, so dead/alive here ' \
+                'cannot be trusted. Re-run `metrics`.'
+            elsif metrics_age_days > STALE_AFTER_DAYS
+              "  METRIC LIST IS #{metrics_age_days} DAYS OLD -- dead/alive reflects the estate " \
+                'as it was then, not now. Re-run `metrics`.'
+            end
+          end
 
           def findings
             {
@@ -77,6 +91,7 @@ module Pangea
               'dead' => diagnosed? ? dead.size : nil,
               'empty' => diagnosed? ? empty_dashboards.size : nil,
               'silenceDiagnosed' => diagnosed?,
+              'metricsAgeDays' => metrics_age_days,
               'deadMonitors' => dead.map { |f| { 'id' => f.id, 'detail' => f.detail } },
               'emptyDashboards' => empty_dashboards.map { |f| { 'id' => f.id, 'detail' => f.detail } },
               'dangling' => dangling.size,
@@ -102,6 +117,7 @@ module Pangea
               lines << '  SILENCE NOT DIAGNOSED -- without --active-metrics every silent monitor ' \
                        'is reported as healthy, including any that can no longer fire'
             end
+            lines << stale_metrics_warning if diagnosed? && stale_metrics_warning
             clusters.each do |date, names|
               lines << "  SILENT since #{date}: #{names.size} monitors went No Data together"
             end
@@ -116,7 +132,12 @@ module Pangea
         # recently. It is OPTIONAL and comes in as data, so this audit stays
         # offline by construction -- the same arrangement conform has with the
         # provider schema. `pangea-datadog-absorb metrics` produces it.
-        def run(capture, today: Date.today, active_metrics: nil)
+        # STALE_AFTER_DAYS is deliberately short. The dead/silent verdict is a
+        # statement about what is reporting NOW, and a metric list from a month
+        # ago answers a different question with the same confidence.
+        STALE_AFTER_DAYS = 7
+
+        def run(capture, today: Date.today, active_metrics: nil, metrics_age_days: nil)
           slos = slo_timeframes(capture)
           broken = []
           silent = []
@@ -134,7 +155,7 @@ module Pangea
           Result.new(broken: broken.sort_by(&:id), dangling: dangling_references(capture, slos),
                      silent: still_silent.sort_by { |s| s[:since].to_s }, dead: dead,
                      empty_dashboards: empty_dashboards(capture, active_metrics),
-                     diagnosed: !active_metrics.nil?,
+                     diagnosed: !active_metrics.nil?, metrics_age_days: metrics_age_days,
                      clusters: cluster(still_silent), monitors: monitors)
         end
 

@@ -2,6 +2,7 @@
 
 require 'forwardable'
 require 'json'
+require 'time'
 require 'tmpdir'
 
 require_relative 'absorb/client'
@@ -207,8 +208,26 @@ module Pangea
       # approve. See Audit for why a broken monitor and a silent one are
       # counted differently.
       def audit(root:, active_metrics_path: nil)
-        active = active_metrics_path ? JSON.parse(File.read(active_metrics_path)) : nil
-        Audit.run(Capture.new(root), active_metrics: active)
+        names, age = read_active_metrics(active_metrics_path)
+        Audit.run(Capture.new(root), active_metrics: names, metrics_age_days: age)
+      end
+
+      # Accepts both shapes. Early files are a bare array of names and carry no
+      # provenance at all; a nil age means the audit cannot vouch for freshness
+      # and says so rather than assuming it.
+      def read_active_metrics(path)
+        return [nil, nil] if path.nil?
+
+        document = JSON.parse(File.read(path))
+        return [document, nil] if document.is_a?(Array)
+
+        taken = begin
+          Time.parse(document['generatedAt'].to_s)
+        rescue StandardError
+          nil
+        end
+        age = taken.nil? ? nil : ((Time.now.utc - taken) / 86_400).floor
+        [document['metrics'], age]
       end
 
       # The actively-reporting metric list, as JSON. This is audit's optional

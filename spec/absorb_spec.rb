@@ -2028,6 +2028,39 @@ RSpec.describe Absorb do
         expect(result).to be_ok
       end
 
+      # The dead/alive verdict is only as current as the metric list behind it.
+      # A months-old list calls live metrics dead with exactly the same
+      # confidence as a fresh one -- inverting the audit's most valuable
+      # finding while looking just as authoritative.
+      it 'says so when the metric list is too old to trust' do
+        cap = capture_with(monitors: {})
+        cap.write(:monitors, '1', silent_monitor(1, 'avg(last_10m):avg:gone.metric{*} > 5'))
+        result = described_class.run(cap, active_metrics: ['live.metric'], metrics_age_days: 40)
+
+        expect(result.to_s).to include('METRIC LIST IS 40 DAYS OLD')
+        expect(result.findings['metricsAgeDays']).to eq(40)
+      end
+
+      it 'stays quiet about a fresh metric list' do
+        cap = capture_with(monitors: {})
+        cap.write(:monitors, '1', silent_monitor(1, 'avg(last_10m):avg:gone.metric{*} > 5'))
+        result = described_class.run(cap, active_metrics: ['live.metric'], metrics_age_days: 1)
+
+        expect(result.to_s).not_to include('DAYS OLD')
+        expect(result.to_s).not_to include('AGE UNKNOWN')
+      end
+
+      # Early metric files are a bare array with no provenance whatever.
+      # Unknown age is not the same as fresh.
+      it 'says so when the metric list carries no timestamp at all' do
+        cap = capture_with(monitors: {})
+        cap.write(:monitors, '1', silent_monitor(1, 'avg(last_10m):avg:gone.metric{*} > 5'))
+        result = described_class.run(cap, active_metrics: ['live.metric'])
+
+        expect(result.to_s).to include('METRIC LIST AGE UNKNOWN')
+        expect(result.findings['metricsAgeDays']).to be_nil
+      end
+
       # Without the metric list the audit cannot tell the two apart, and must
       # say so rather than reporting a healthy reading it cannot justify. An
       # earlier version inferred this from `dead` being empty, so an

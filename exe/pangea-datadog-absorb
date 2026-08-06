@@ -5,6 +5,7 @@ $LOAD_PATH.unshift(File.expand_path('../lib', __dir__))
 
 require 'optparse'
 require 'json'
+require 'time'
 require 'pangea/datadog/absorb'
 
 Absorb = Pangea::Datadog::Absorb
@@ -179,11 +180,16 @@ when 'metrics'
     warn e.message
     exit 2
   end
+  # WITH PROVENANCE. A bare list of names cannot say when it was taken or over
+  # what window, so an audit run against a months-old file calls live metrics
+  # dead with total confidence -- inverting its most valuable finding and
+  # looking exactly as authoritative while doing it.
+  document = { 'generatedAt' => Time.now.utc.iso8601, 'windowDays' => 30, 'metrics' => names }
   if options[:out_given]
-    File.write(options[:out_given], JSON.generate(names))
+    File.write(options[:out_given], JSON.generate(document))
     warn "metrics: #{names.size} names -> #{options[:out_given]}"
   else
-    puts JSON.generate(names)
+    puts JSON.generate(document)
   end
   exit 0
 
