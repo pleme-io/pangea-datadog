@@ -33,6 +33,8 @@ parser = OptionParser.new do |o|
       classify   report provenance and tier over a capture
       emit       generate typed Pangea Ruby from a capture
       verify     prove the generated code state-matches the capture
+      metrics    dump the actively-reporting metric names as JSON -- audit's
+                 optional input. Read-only.
       schema     dump the provider's own schema as JSON -- conform's input.
                  Needs only --provider-dir; no credentials, no capture.
       conform    does emitted code conform to the PROVIDER's own schema?
@@ -66,6 +68,10 @@ parser = OptionParser.new do |o|
   o.on('--account NAME', 'credential dir under ~/.config/datadog (config wins)') { |v| options[:account] = v }
   o.on('--site SITE', 'datadog site (config wins)') { |v| options[:site] = v }
   o.on('--receipt-dir DIR', 'write a typed JSON receipt per run (keyway)') { |v| options[:receipt_dir] = v }
+  o.on('--active-metrics PATH',
+       'metric-name JSON from `metrics` (audit: tells a dead monitor from a healthy silent one)') do |v|
+    options[:active_metrics] = v
+  end
   o.on('--provider-schema PATH',
        'terraform providers schema -json output (census: what it does NOT look at)') do |v|
     options[:provider_schema] = v
@@ -150,7 +156,7 @@ when 'verify'
 
 when 'audit'
   begin
-    result  = Absorb.audit(root: options[:root])
+    result  = Absorb.audit(root: options[:root], active_metrics_path: options[:active_metrics])
     receipt = (result.ok? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
               .call(command: 'audit', target: File.basename(options[:root]),
                     findings: result.findings)
@@ -164,6 +170,22 @@ when 'audit'
   puts result
   emit_receipt(receipt, options[:receipt_dir])
   exit receipt.exit_code
+
+when 'metrics'
+  begin
+    names = Absorb.active_metrics(config_path: options[:config], account: options[:account],
+                                  site: options[:site])
+  rescue StandardError => e
+    warn e.message
+    exit 2
+  end
+  if options[:out_given]
+    File.write(options[:out_given], JSON.generate(names))
+    warn "metrics: #{names.size} names -> #{options[:out_given]}"
+  else
+    puts JSON.generate(names)
+  end
+  exit 0
 
 when 'schema'
   unless options[:provider_dir]

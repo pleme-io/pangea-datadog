@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require 'forwardable'
+require 'json'
 require 'tmpdir'
 
 require_relative 'absorb/client'
@@ -201,8 +202,23 @@ module Pangea
       # computed from a capture already on disk, no API call, nothing to
       # approve. See Audit for why a broken monitor and a silent one are
       # counted differently.
-      def audit(root:)
-        Audit.run(Capture.new(root))
+      def audit(root:, active_metrics_path: nil)
+        active = active_metrics_path ? JSON.parse(File.read(active_metrics_path)) : nil
+        Audit.run(Capture.new(root), active_metrics: active)
+      end
+
+      # The actively-reporting metric list, as JSON. This is audit's optional
+      # input, kept as a separate read-only step so the audit itself stays
+      # offline -- the same arrangement conform has with the provider schema.
+      def active_metrics(config_path: nil, account: nil, site: nil, days: 30)
+        cfg = config_path ? Config.load(config_path) : nil
+        client =
+          if cfg
+            Client.from_config(cfg, site: site)
+          else
+            Client.for_account(account, site: site || Client::DEFAULT_SITE)
+          end
+        client.active_metrics(from: Time.now.to_i - (days * 24 * 3600))
       end
 
       def verify(root:, out_dir:)

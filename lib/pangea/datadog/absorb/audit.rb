@@ -2,6 +2,7 @@
 
 require 'json'
 require 'date'
+require 'set'
 
 module Pangea
   module Datadog
@@ -50,14 +51,27 @@ module Pangea
 
         Finding = Struct.new(:id, :name, :detail, keyword_init: true)
 
-        Result = Struct.new(:broken, :dangling, :silent, :clusters, :monitors, keyword_init: true) do
-          def ok? = broken.empty? && dangling.empty?
+        Result = Struct.new(:broken, :dangling, :silent, :dead, :clusters, :monitors,
+                            :diagnosed, keyword_init: true) do
+          # `dead` counts. A monitor whose metric stopped reporting cannot fire,
+          # so it is a defect in exactly the way `broken` is -- the distinction
+          # this audit turns on is CAN IT EVALUATE, and this one cannot.
+          def ok? = broken.empty? && dangling.empty? && dead.empty?
+
+          # An EXPLICIT field, not inferred from `dead` being empty. Inferring
+          # it meant an undiagnosed run reported `dead 0` and printed no
+          # warning, which reads as "none found" rather than "not checked" --
+          # the precise confusion this whole audit exists to avoid.
+          def diagnosed? = diagnosed
 
           def findings
             {
               'monitors' => monitors,
               'broken' => broken.size,
               'silent' => silent.size,
+              'dead' => dead.size,
+              'silenceDiagnosed' => diagnosed?,
+              'deadMonitors' => dead.map { |f| { 'id' => f.id, 'detail' => f.detail } },
               'dangling' => dangling.size,
               'brokenMonitors' => broken.map { |f| { 'id' => f.id, 'detail' => f.detail } },
               'danglingReferences' => dangling.map { |f| { 'id' => f.id, 'detail' => f.detail } },
@@ -67,9 +81,15 @@ module Pangea
 
           def to_s
             lines = ["audited #{monitors} monitors, broken #{broken.size}, " \
-                     "dangling #{dangling.size}, silent #{silent.size}"]
+                     "dangling #{dangling.size}, dead #{diagnosed? ? dead.size : 'not-checked'}, " \
+                     "silent #{silent.size}"]
             broken.each { |f| lines << "  BROKEN #{f.id} #{f.name} -- #{f.detail}" }
             dangling.each { |f| lines << "  DANGLING #{f.id} #{f.name} -- #{f.detail}" }
+            dead.each { |f| lines << "  DEAD #{f.id} #{f.name} -- #{f.detail}" }
+            unless diagnosed?
+              lines << '  SILENCE NOT DIAGNOSED -- without --active-metrics every silent monitor ' \
+                       'is reported as healthy, including any that can no longer fire'
+            end
             clusters.each do |date, names|
               lines << "  SILENT since #{date}: #{names.size} monitors went No Data together"
             end
@@ -80,7 +100,11 @@ module Pangea
 
         module_function
 
-        def run(capture, today: Date.today)
+        # `active_metrics` is the set of metric names Datadog has seen report
+        # recently. It is OPTIONAL and comes in as data, so this audit stays
+        # offline by construction -- the same arrangement conform has with the
+        # provider schema. `pangea-datadog-absorb metrics` produces it.
+        def run(capture, today: Date.today, active_metrics: nil)
           slos = slo_timeframes(capture)
           broken = []
           silent = []
@@ -93,9 +117,62 @@ module Pangea
             silent << entry if entry
           end
 
+          still_silent, dead = split_silence(capture, silent, active_metrics)
+
           Result.new(broken: broken.sort_by(&:id), dangling: dangling_references(capture, slos),
-                     silent: silent.sort_by { |s| s[:since].to_s },
-                     clusters: cluster(silent), monitors: monitors)
+                     silent: still_silent.sort_by { |s| s[:since].to_s }, dead: dead,
+                     diagnosed: !active_metrics.nil?,
+                     clusters: cluster(still_silent), monitors: monitors)
+        end
+
+        # A THIRD CATEGORY, and the reason this matters.
+        #
+        # This audit's headline claim is that silent is not a defect: No Data is
+        # the healthy state for an ephemeral target. That is true right up until
+        # the metric itself stops existing, at which point the monitor cannot
+        # fire at all and "healthy" is exactly the wrong word.
+        #
+        # Measured on this estate: 8 of 28 silent monitors query a metric that
+        # has not reported in 30 days. Five watch azure.dbformysql_servers.*,
+        # two watch gcp.vpn.*. Azure and GCP are both reporting healthily
+        # overall -- 371 and 1137 metrics -- so nothing looked broken. The
+        # databases and VPN gateways were decommissioned and the alerts stayed.
+        # "[gcp] VPN Tunnel is down" cannot tell anyone a VPN tunnel is down.
+        #
+        # Without the metric list this returns everything as silent and SAYS SO,
+        # rather than reporting the healthy reading it cannot justify.
+        def split_silence(capture, silent, active_metrics)
+          return [silent, []] if active_metrics.nil?
+
+          active = active_metrics.to_set
+          dead = []
+          alive = []
+          silent.each do |entry|
+            payload = capture.read(:monitors, entry[:id])
+            gone = query_metrics(payload['query']).reject { |name| active.include?(name) }
+            if gone.empty?
+              alive << entry
+            else
+              dead << Finding.new(id: entry[:id], name: entry[:name],
+                                  detail: "queries #{gone.join(', ')}, which has not reported " \
+                                          'recently -- this monitor cannot fire')
+            end
+          end
+          [alive, dead.sort_by(&:id)]
+        end
+
+        # The metric is the dotted identifier immediately before the tag brace:
+        #   avg(last_10m):avg:METRIC{tags} by {x} > 2
+        #
+        # A first version required whitespace before the aggregator and so
+        # failed to parse 21 of 28 real queries, every one an ordinary query
+        # alert. It reported them as carrying no metric, which would have read
+        # as "nothing to check" instead of "the parser is wrong". The dot
+        # requirement keeps a bare word from being mistaken for a metric.
+        QUERY_METRIC = /:([a-z][\w.]*)\s*\{/i
+
+        def query_metrics(query)
+          query.to_s.scan(QUERY_METRIC).flatten.uniq.select { |name| name.include?('.') }
         end
 
         # A dashboard widget pointing at a monitor or SLO that no longer exists.

@@ -1893,6 +1893,79 @@ RSpec.describe Absorb do
     # clean -- the reference is just a number inside the widget JSON and the
     # provider has no idea the thing it names was deleted. Found live: two
     # dashboards still pointing at monitor 106953745, which returns 404.
+    describe 'telling a dead monitor from a healthy silent one' do
+      def silent_monitor(id, query)
+        { 'id' => id, 'name' => "mon #{id}", 'type' => 'query alert', 'query' => query,
+          'overall_state' => 'No Data', 'overall_state_modified' => '2026-01-01T00:00:00Z',
+          'message' => 'trouble @slack-ops', 'options' => { 'notify_no_data' => false } }
+      end
+
+      # This audit's headline claim is that silent is not a defect: No Data is
+      # healthy for an ephemeral target. That holds right up until the metric
+      # stops existing, at which point the monitor cannot fire at all and
+      # "healthy" is exactly the wrong word. 8 of this estate's 28 silent
+      # monitors are in that state, five on azure.dbformysql_servers.* and two
+      # on gcp.vpn.*, while Azure and GCP both report healthily overall.
+      it 'calls a monitor dead when its metric no longer reports' do
+        cap = capture_with(monitors: {})
+        cap.write(:monitors, '1', silent_monitor(1, 'avg(last_10m):avg:gone.metric{*} > 5'))
+        result = described_class.run(cap, active_metrics: ['live.metric'])
+
+        expect(result.dead.map(&:id)).to eq(['1'])
+        expect(result.dead.first.detail).to include('cannot fire')
+        expect(result.silent).to be_empty
+        # dead is a defect in the way broken is: the question is can it evaluate.
+        expect(result).not_to be_ok
+      end
+
+      it 'leaves a silent monitor alone when its metric still reports' do
+        cap = capture_with(monitors: {})
+        cap.write(:monitors, '1', silent_monitor(1, 'avg(last_10m):avg:live.metric{*} > 5'))
+        result = described_class.run(cap, active_metrics: ['live.metric'])
+
+        expect(result.dead).to be_empty
+        expect(result.silent.size).to eq(1)
+        expect(result).to be_ok
+      end
+
+      # Without the metric list the audit cannot tell the two apart, and must
+      # say so rather than reporting a healthy reading it cannot justify. An
+      # earlier version inferred this from `dead` being empty, so an
+      # undiagnosed run printed "dead 0" and no warning -- which reads as none
+      # found rather than not checked.
+      it 'says the diagnosis did not run rather than implying none were found' do
+        cap = capture_with(monitors: {})
+        cap.write(:monitors, '1', silent_monitor(1, 'avg(last_10m):avg:gone.metric{*} > 5'))
+        result = described_class.run(cap)
+
+        expect(result.diagnosed?).to be(false)
+        expect(result.to_s).to include('dead not-checked')
+        expect(result.to_s).to include('SILENCE NOT DIAGNOSED')
+        expect(result.findings['silenceDiagnosed']).to be(false)
+      end
+
+      # THE PARSER, which got this wrong first. The metric sits immediately
+      # before the tag brace and the aggregator is preceded by a COLON, not
+      # whitespace: avg(last_10m):avg:METRIC{...}. Requiring whitespace failed
+      # to parse 21 of 28 real queries and reported them as carrying no metric.
+      it 'reads the metric out of a real query shape' do
+        expect(described_class.query_metrics('avg(last_10m):avg:aws.alb.rt.p95{x:y} by {z} > 2'))
+          .to eq(['aws.alb.rt.p95'])
+        expect(described_class.query_metrics('max(last_10m):max:kubernetes_state.job.failed{!a:b} > 0'))
+          .to eq(['kubernetes_state.job.failed'])
+      end
+
+      # A service check or SLO alert names no metric, and treating its query as
+      # one would invent findings.
+      it 'claims no metric for a query that names none' do
+        expect(described_class.query_metrics('error_budget("abc").over("30d") > 100')).to be_empty
+      end
+
+      it 'does not mistake a bare word for a metric' do
+        expect(described_class.query_metrics('avg(last_5m):avg:notdotted{*} > 1')).to be_empty
+      end
+    end
+
     describe 'dangling references' do
       def dash(id, alert_id)
         { 'id' => id, 'title' => "board #{id}",

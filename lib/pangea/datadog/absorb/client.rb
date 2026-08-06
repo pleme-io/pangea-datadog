@@ -152,6 +152,13 @@ module Pangea
           get_json('/api/v2/roles').fetch('data', [])
         end
 
+        # Metric names Datadog has seen report since `from`. This is the estate
+        # speaking rather than an inference from names, which is what makes it
+        # safe to call a monitor dead.
+        def active_metrics(from:)
+          get_json("/api/v1/metrics?from=#{from.to_i}").fetch('metrics', [])
+        end
+
         # The account's permission CATALOG, not a permission grant. Read-only,
         # and the only thing that says which permissions Datadog marks
         # `restricted` -- a role's own payload lists permission ids and nothing
