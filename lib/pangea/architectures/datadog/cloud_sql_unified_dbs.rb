@@ -60,9 +60,9 @@ module Pangea
         # no meaning in Datadog; it is an artifact of how each board was edited,
         # and it is a parameter only because the estate made it one.
         # scope_overrides maps a widget index to its own scope string. Exactly
-        # one board needs it: WMT Staging's fourth widget drops the spaces its
-        # three siblings carry, writing "project_id:x,!database_id:y" where they
-        # write "project_id:x , ! database_id:y". Datadog reads both the same
+        # one board needs it: on one staging board the fourth widget drops the
+        # spaces its three siblings carry, writing "project_id:x,!database_id:y"
+        # where they write "project_id:x , ! database_id:y". Datadog reads both the same
         # way. A human typed one of them differently, and an archetype that
         # quietly unified them would be rewriting the estate under cover of a
         # refactor -- so the difference is carried, and named.

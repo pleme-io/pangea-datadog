@@ -1,18 +1,30 @@
+# An EXAMPLE deployment config, not a real one.
+#
+# Every organisation-specific fact -- the account name, the secret-path
+# convention, the template prefix, the retire and grouping policy -- lives in a
+# config the operator supplies at `--config PATH`. Real configs are not
+# committed here: this repo is public, and an account name plus a secret-path
+# convention is a consumer's internals. What is committed is a worked example
+# of every knob, so a new operator can copy it rather than guess.
+#
+# config/example-other-org.yaml is the deliberate opposite of this file in
+# every dimension the engine reads; the pair is what proves the engine carries
+# no organisation policy of its own.
 site: datadoghq.com
-account: akeyless
-template_prefix: akeyless_datadog
+account: example-org
+template_prefix: example_org_datadog
 
 credentials:
   # sops-native. Pangea::Secrets.resolve tries, in order:
-  #   ENV DATADOG_AKEYLESS_API_KEY
-  #   ~/.config/sops-nix/secrets/datadog/akeyless/api-key   (deployed on rebuild)
+  #   ENV DATADOG_EXAMPLE_ORG_API_KEY
+  #   ~/.config/sops-nix/secrets/datadog/example-org/api-key  (deployed on rebuild)
   #   sops -d against sops_file
   # These paths are the same strings the nix profiles declare as
   # api_key_secret / app_key_secret, so the deployer and the consumer share
   # one name instead of two that drift.
   source: sops
-  api_key_secret: datadog/akeyless/api-key
-  app_key_secret: datadog/akeyless/app-key
+  api_key_secret: datadog/example-org/api-key
+  app_key_secret: datadog/example-org/app-key
 
 provenance:
   - name: terraform

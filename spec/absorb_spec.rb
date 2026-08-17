@@ -173,14 +173,14 @@ RSpec.describe Absorb do
     # The secret path convention must match what the nix profiles declare, or
     # the deployer and the consumer drift apart.
     it 'derives fleet-convention secret paths from the account' do
-      cfg = Absorb::Config.new({ 'account' => 'akeyless' })
-      expect(cfg.api_key_secret).to eq('datadog/akeyless/api-key')
-      expect(cfg.app_key_secret).to eq('datadog/akeyless/app-key')
+      cfg = Absorb::Config.new({ 'account' => 'example-org' })
+      expect(cfg.api_key_secret).to eq('datadog/example-org/api-key')
+      expect(cfg.app_key_secret).to eq('datadog/example-org/app-key')
     end
 
     it 'loads and validates both shipped configs' do
       root = File.expand_path('../config', __dir__)
-      %w[akeyless.yaml example-other-org.yaml].each do |name|
+      %w[example-org.yaml example-other-org.yaml].each do |name|
         expect { Absorb::Config.load(File.join(root, name)) }.not_to raise_error
       end
     end
@@ -191,16 +191,21 @@ RSpec.describe Absorb do
     it 'makes the minimum judgement with no config at all' do
       none = Absorb::Rules.none
 
-      expect(none.retire_title?("Niv's Dashboard")).to be(false)
+      expect(none.retire_title?("Someone's Dashboard")).to be(false)
       expect(none.dedupe_identical?).to be(false)
       expect(none.archetype_for('anything')).to be_nil
       expect(none.group_for(monitor_payload)).to eq('unclassified')
       expect(none.provenance_of(monitor_payload)).to be_nil
     end
 
+    # The forbidden set names the organisations this repo itself knows about --
+    # the two example accounts the shipped configs describe, and the one real
+    # account this engine was first pointed at. A real deployment supplies its
+    # own config, so its account name never enters this repo and therefore
+    # cannot be spelled out here; the example names stand in for that class.
     it 'carries no organisation policy in code' do
       engine_source = File.read(File.expand_path('../lib/pangea/datadog/absorb/rules.rb', __dir__))
-      expect(engine_source).not_to match(/akeyless|walmart|dbk|cvs/i)
+      expect(engine_source).not_to match(/akeyless|example[-_]org|other[-_]org/i)
     end
 
     it 'resolves provenance from config order' do
@@ -231,20 +236,20 @@ RSpec.describe Absorb do
     # 274 -> 280 while every attribute still matched, because a case-insensitive
     # constant became a case-sensitive Regexp.new. Inline (?i) is the fix.
     it 'honours an inline case-insensitive flag in a retire pattern' do
-      expect(rules.retire_title?('Akeyless GW - POC')).to be(true)
+      expect(rules.retire_title?('Legacy GW - POC')).to be(true)
       expect(rules.retire_title?('Anomaly Dashboard - Test')).to be(true)
     end
 
     it 'does not retire on a pattern that omits the flag' do
       strict = rules('retire' => { 'title_patterns' => ['\\b(test|poc)\\b'] })
-      expect(strict.retire_title?('Akeyless GW - POC')).to be(false)
+      expect(strict.retire_title?('Legacy GW - POC')).to be(false)
     end
   end
 
   # The generality claim, PROVEN rather than documented.
   #
   # config/example-other-org.yaml carries a header listing every dimension in
-  # which it differs from akeyless.yaml. Until now nothing checked that any of
+  # which it differs from example-org.yaml. Until now nothing checked that any of
   # those differences reached the engine: both configs were loaded, validated,
   # and never driven. A config file that parses is not a proof of generality.
   #
@@ -260,8 +265,8 @@ RSpec.describe Absorb do
     end
 
     it 'takes the prefix from config when one is supplied' do
-      cfg = Absorb::Config.load(File.expand_path('../config/akeyless.yaml', __dir__))
-      expect(Absorb::Rules.from(cfg).template_prefix).to eq('akeyless_datadog')
+      cfg = Absorb::Config.load(File.expand_path('../config/example-org.yaml', __dir__))
+      expect(Absorb::Rules.from(cfg).template_prefix).to eq('example_org_datadog')
     end
 
     it 'falls back to the default when the key is absent from a config' do
@@ -290,7 +295,7 @@ RSpec.describe Absorb do
                          ))
     end
 
-    let(:akeyless) { shipped('akeyless.yaml') }
+    let(:example_org) { shipped('example-org.yaml') }
     let(:other) { shipped('example-other-org.yaml') }
 
     # tagged for BOTH conventions, so the difference is the config, not the data
@@ -299,18 +304,18 @@ RSpec.describe Absorb do
     end
 
     it 'reads ownership from a different tag convention' do
-      # akeyless matches on created_by:/tag-prefix conventions, so a monitor
+      # example-org matches on created_by:/tag-prefix conventions, so a monitor
       # tagged only owner:pulumi falls through to its terminal rule and is
       # adopted. The other org reads that same tag as another writer's mark.
-      expect(akeyless.provenance_of(shared_monitor)).to eq('manual')
-      expect(akeyless.adopt?(shared_monitor)).to be(true)
+      expect(example_org.provenance_of(shared_monitor)).to eq('manual')
+      expect(example_org.adopt?(shared_monitor)).to be(true)
 
       expect(other.provenance_of(shared_monitor)).to eq('pulumi')
       expect(other.frozen?(shared_monitor)).to be(true)
       expect(other.adopt?(shared_monitor)).to be(false)
     end
 
-    # `ignore` is a disposition akeyless does not use at all.
+    # `ignore` is a disposition example-org does not use at all.
     it 'honours a disposition the other config does not have' do
       legacy = monitor_payload.merge('tags' => ['legacy/imported'])
 
@@ -320,14 +325,14 @@ RSpec.describe Absorb do
     end
 
     it 'groups monitors by a different tag' do
-      expect(akeyless.group_for(shared_monitor)).to eq('rabbitmq')
+      expect(example_org.group_for(shared_monitor)).to eq('rabbitmq')
       expect(other.group_for(shared_monitor)).to eq('api')
     end
 
     it 'falls back to a different name when the grouping tag is absent' do
       untagged = { 'tags' => [] }
 
-      expect(akeyless.group_for(untagged)).to eq('unclassified')
+      expect(example_org.group_for(untagged)).to eq('unclassified')
       expect(other.group_for(untagged)).to eq('unowned')
     end
 
@@ -335,46 +340,46 @@ RSpec.describe Absorb do
     # `repair_tags` is the pure repair, used to MATCH provenance so a corrupted
     # tag still classifies correctly -- that must happen under either config.
     # `repair_on_emit?` decides whether the repaired form is what gets written,
-    # and akeyless deliberately leaves it off so the estate defect stays visible
-    # in the generated code rather than being silently tidied away.
+    # and example-org deliberately leaves it off so the estate defect stays
+    # visible in the generated code rather than being silently tidied away.
     it 'repairs tags for matching under either config' do
       broken = ["['integration: rabbitmq'", "'monitors_ver:1']"]
       repaired = ['integration:rabbitmq', 'monitors_ver:1']
 
       expect(other.repair_tags(broken)).to eq(repaired)
-      expect(akeyless.repair_tags(broken)).to eq(repaired)
+      expect(example_org.repair_tags(broken)).to eq(repaired)
     end
 
     it 'writes the repaired form only where the config asks for it' do
       expect(other.repair_on_emit?).to be(true)
-      expect(akeyless.repair_on_emit?).to be(false)
+      expect(example_org.repair_on_emit?).to be(false)
     end
 
-    it 'leaves a corrupted tag corrupted in akeyless output, and fixes it in the other' do
+    it 'leaves a corrupted tag corrupted in one config output, and fixes it in the other' do
       broken = monitor_payload.merge('id' => 2, 'tags' => ["['integration: rabbitmq'", "'x:1']"])
       capture = Absorb::Capture.new(File.join(@dir, 'repair'))
       capture.prepare
       capture.write(:monitors, '2', broken)
 
-      Absorb::Emit.new(capture: capture, out_dir: File.join(@dir, 'ra'), rules: akeyless).run
+      Absorb::Emit.new(capture: capture, out_dir: File.join(@dir, 'ra'), rules: example_org).run
       emitted = File.read(Dir[File.join(@dir, 'ra', 'monitors_*.rb')].first)
 
       expect(emitted).to include("[\'integration: rabbitmq\'")
     end
 
     it 'dedupes identical dashboards only where the config asks for it' do
-      expect(akeyless.dedupe_identical?).to be(true)
+      expect(example_org.dedupe_identical?).to be(true)
       expect(other.dedupe_identical?).to be(false)
     end
 
     it 'retires on title only where patterns are configured' do
-      expect(akeyless.retire_title?('Akeyless GW - POC')).to be(true)
-      expect(other.retire_title?('Akeyless GW - POC')).to be(false)
+      expect(example_org.retire_title?('Legacy GW - POC')).to be(true)
+      expect(other.retire_title?('Legacy GW - POC')).to be(false)
     end
 
     it 'matches a different archetype family' do
       expect(other.archetype_for('billing RDS Pair')&.name).to eq('rds_pair')
-      expect(akeyless.archetype_for('billing RDS Pair')).to be_nil
+      expect(example_org.archetype_for('billing RDS Pair')).to be_nil
     end
 
     # The end-to-end difference: the same capture, emitted twice, lands in
@@ -384,10 +389,10 @@ RSpec.describe Absorb do
       capture.prepare
       capture.write(:monitors, '1', shared_monitor.merge('id' => 1))
 
-      a = Absorb::Emit.new(capture: capture, out_dir: File.join(@dir, 'a'), rules: akeyless).run
+      a = Absorb::Emit.new(capture: capture, out_dir: File.join(@dir, 'a'), rules: example_org).run
       b = Absorb::Emit.new(capture: capture, out_dir: File.join(@dir, 'b'), rules: other).run
 
-      # akeyless adopts it and files it under its integration tag
+      # example-org adopts it and files it under its integration tag
       expect(a.keys).to eq(['datadog_monitor.rabbitmq_free_memory_1'])
       expect(File).to exist(File.join(@dir, 'a', 'monitors_rabbitmq.rb'))
 
@@ -445,7 +450,7 @@ RSpec.describe Absorb do
 
   describe Absorb::Classify do
     it 'retires a dashboard matching a configured title pattern' do
-      payload = dashboard_payload.merge('title' => "Niv's Dashboard")
+      payload = dashboard_payload.merge('title' => "Someone's Dashboard")
 
       expect(described_class.dashboard_tier(payload, id: 'x', rules: rules))
         .to eq(described_class::TIER_RETIRE)
@@ -535,7 +540,7 @@ RSpec.describe Absorb do
 
     it 'mentions no organisation, metric or product in its source' do
       source = File.read(File.expand_path('../lib/pangea/datadog/absorb/engines/timeseries_grid.rb', __dir__))
-      expect(source).not_to match(/gcp\.cloudsql|aws\.rds|akeyless|walmart/i)
+      expect(source).not_to match(/gcp\.cloudsql|aws\.rds|akeyless|example[-_]org/i)
     end
   end
 
@@ -739,7 +744,7 @@ RSpec.describe Absorb do
       skip 'set ABSORB_ESTATE=/path/to/capture to check a real estate' if root.nil?
 
       cap = Absorb::Capture.new(root)
-      config = ENV.fetch('ABSORB_CONFIG', File.expand_path('../config/akeyless.yaml', __dir__))
+      config = ENV.fetch('ABSORB_CONFIG', File.expand_path('../config/example-org.yaml', __dir__))
       real_rules = File.exist?(config) ? Absorb::Rules.from(Absorb::Config.load(config)) : Absorb::Rules.none
       roundtrip = Absorb::Roundtrip.new(capture: cap, provider_dir: '/nonexistent', rules: real_rules)
 
@@ -1577,7 +1582,7 @@ RSpec.describe Absorb do
     end
 
     it 'skips a retire-tier dashboard' do
-      scratch = dashboard_payload.merge('title' => "Niv's Dashboard")
+      scratch = dashboard_payload.merge('title' => "Someone's Dashboard")
       cap = capture_with(dashboards: { 'keep' => dashboard_payload, 'drop' => scratch })
       spec = described_class::KINDS[:dashboards]
 
@@ -1889,7 +1894,7 @@ RSpec.describe Absorb do
       cap.write(:dashboards, 'abc-def-ghi', dashboard_payload)
       cap.write(:dashboards, 'arch-1', dashboard_payload.merge(
                                          'id' => 'arch-1',
-                                         'title' => "DBK Production Unified DB's (Estimation)"
+                                         'title' => "Example Production Unified DB's (Estimation)"
                                        ))
       archetyped = rules('archetypes' => [
                            { 'name' => 'unified_dbs', 'engine' => 'timeseries_grid',
@@ -1920,7 +1925,7 @@ RSpec.describe Absorb do
     # A shard name lives in two namespaces with different rules, and deriving
     # both from one string is what broke: the chart needs a DNS label
     # (hyphens), Ruby needs a valid identifier (underscores).
-    # `template :akeyless_datadog_dashboards-archetype do` is NOT a parse error
+    # `template :example_org_datadog_dashboards-archetype do` is NOT a parse error
     # -- Ruby reads it as symbol-minus-method-call and dies at runtime, which is
     # why `ruby -c` reported "Syntax OK" on a file that could never run.
     it 'gives the template a valid ruby identifier even when the shard is hyphenated' do
@@ -2285,25 +2290,25 @@ RSpec.describe Absorb do
     describe 'logs metrics that never report' do
       it 'reports a defined metric Datadog has not seen' do
         cap = capture_with(monitors: {})
-        cap.write(:logs_metrics, 'akeyless.path', { 'id' => 'akeyless.path' })
+        cap.write(:logs_metrics, 'stale.path', { 'id' => 'stale.path' })
         cap.write(:logs_metrics, 'live.one', { 'id' => 'live.one' })
         result = described_class.run(cap, active_metrics: ['live.one'])
 
-        expect(result.dead_metrics.map(&:id)).to eq(['akeyless.path'])
+        expect(result.dead_metrics.map(&:id)).to eq(['stale.path'])
         expect(result.to_s).to include('billed and produces nothing')
       end
 
       # Dead weight, not breakage -- the same call as an empty dashboard.
       it 'does not fail the gate' do
         cap = capture_with(monitors: {})
-        cap.write(:logs_metrics, 'akeyless.path', { 'id' => 'akeyless.path' })
+        cap.write(:logs_metrics, 'stale.path', { 'id' => 'stale.path' })
 
         expect(described_class.run(cap, active_metrics: ['live.one'])).to be_ok
       end
 
       it 'claims nothing without the metric list' do
         cap = capture_with(monitors: {})
-        cap.write(:logs_metrics, 'akeyless.path', { 'id' => 'akeyless.path' })
+        cap.write(:logs_metrics, 'stale.path', { 'id' => 'stale.path' })
         result = described_class.run(cap)
 
         expect(result.dead_metrics).to be_empty
@@ -3092,7 +3097,7 @@ RSpec.describe Absorb do
     # flat list against a nested one and fail on every powerpack.
     describe 'powerpacks' do
       let(:pack) do
-        { 'attributes' => { 'name' => 'Network', 'tags' => ['tag:akeyless'],
+        { 'attributes' => { 'name' => 'Network', 'tags' => ['tag:example'],
                             'group_widget' => { 'definition' => {
                               'widgets' => [{ 'definition' => { 'title' => 'a' } },
                                             { 'definition' => { 'title' => 'b' } }]
@@ -3104,12 +3109,12 @@ RSpec.describe Absorb do
       end
 
       it 'compares the flat provider list against the nested API group' do
-        expect(pp_fidelity({ 'name' => 'Network', 'tags' => ['tag:akeyless'],
+        expect(pp_fidelity({ 'name' => 'Network', 'tags' => ['tag:example'],
                              'widget' => [{ 'q' => 1 }, { 'q' => 2 }] })).to be_empty
       end
 
       it 'catches a widget added since the sidecar was recorded' do
-        expect(pp_fidelity({ 'name' => 'Network', 'tags' => ['tag:akeyless'],
+        expect(pp_fidelity({ 'name' => 'Network', 'tags' => ['tag:example'],
                              'widget' => [{ 'q' => 1 }] })).to eq(['widget_count'])
       end
 
@@ -3220,9 +3225,9 @@ RSpec.describe Absorb do
     end
 
     it 'builds the body from the recorded state' do
-      body = Absorb::Normalize.powerpack(payload, { 'name' => 'Network', 'tags' => ['tag:akeyless'] })
+      body = Absorb::Normalize.powerpack(payload, { 'name' => 'Network', 'tags' => ['tag:example'] })
 
-      expect(body).to eq({ name: 'Network', tags: ['tag:akeyless'] })
+      expect(body).to eq({ name: 'Network', tags: ['tag:example'] })
     end
 
     # Emitting a half-formed powerpack would produce code terraform rejects.
