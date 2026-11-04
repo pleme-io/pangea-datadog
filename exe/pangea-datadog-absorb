@@ -1,0 +1,355 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+$LOAD_PATH.unshift(File.expand_path('../lib', __dir__))
+
+require 'optparse'
+require 'json'
+require 'time'
+require 'pangea/datadog/absorb'
+
+Absorb = Pangea::Datadog::Absorb
+
+options = {
+  config: nil,
+  root: File.join(Dir.pwd, 'estate'),
+  out: File.join(Dir.pwd, 'generated'),
+  account: nil,
+  site: nil,
+  receipt_dir: nil,
+  provider_dir: nil,
+  kinds: nil,
+  per_kind: 1
+}
+
+parser = OptionParser.new do |o|
+  o.banner = <<~TEXT
+    usage: pangea-datadog-absorb <command> [options]
+
+    exit codes: 0 pass, 1 fail (ran fine, answer is no), 2 error (could not answer)
+
+    commands:
+      validate   load the config and report the first error, or ok
+      capture    read the live estate to disk, losslessly
+      classify   report provenance and tier over a capture
+      emit       generate typed Pangea Ruby from a capture
+      verify     prove the generated code state-matches the capture
+      metrics    dump the actively-reporting metric names as JSON -- audit's
+                 optional input. Read-only.
+      schema     dump the provider's own schema as JSON -- conform's input.
+                 Needs only --provider-dir; no credentials, no capture.
+      conform    does emitted code conform to the PROVIDER's own schema?
+                 Offline, no credentials, seconds. Catches a provider upgrade
+                 that renames or re-classifies an attribute -- which roundtrip
+                 also catches but only with live creds and about an hour.
+      census     what the estate holds that absorb does NOT absorb. Read-only
+                 and counts only -- nothing is written. Distinguishes a type
+                 with zero objects (an absence) from one the key cannot read
+                 (unanswerable), which are not the same thing.
+      audit      report monitors that CANNOT evaluate, and monitors that have
+                 gone silent (OFFLINE: reads the capture, never calls Datadog)
+      gate       emit + verify in one step, one receipt, exit 0/1/2
+                 (OFFLINE: reads the capture, never calls Datadog)
+      reconcile  record the provider's own post-import body for objects that
+                 cannot plan clean from the API payload alone -- dashboards by
+                 default, --kinds powerpacks for powerpacks (OPT-IN, read-only)
+      roundtrip  prove terraform plans to "No changes" against the LIVE objects
+                 (read-only: import + plan are GET; never applies)
+
+    The engine carries no organisation's policy. Everything estate-specific
+    lives in --config; without one, absorb makes the minimum judgement.
+
+  TEXT
+  o.on('--config PATH', 'typed YAML config') { |v| options[:config] = v }
+  o.on('--root DIR', 'capture directory (default ./estate)') { |v| options[:root] = v }
+  o.on('--out DIR', 'generated code directory (default ./generated; gate defaults to a temp dir)') do |v|
+    options[:out] = v
+    options[:out_given] = v
+  end
+  o.on('--account NAME', 'credential dir under ~/.config/datadog (config wins)') { |v| options[:account] = v }
+  o.on('--site SITE', 'datadog site (config wins)') { |v| options[:site] = v }
+  o.on('--receipt-dir DIR', 'write a typed JSON receipt per run') { |v| options[:receipt_dir] = v }
+  o.on('--active-metrics PATH',
+       'metric-name JSON from `metrics` (audit: tells a dead monitor from a healthy silent one)') do |v|
+    options[:active_metrics] = v
+  end
+  o.on('--provider-schema PATH',
+       'terraform providers schema -json output (census: what it does NOT look at)') do |v|
+    options[:provider_schema] = v
+  end
+  o.on('--provider-dir DIR', 'terraform provider filesystem mirror (roundtrip)') { |v| options[:provider_dir] = v }
+  o.on('--kinds LIST', 'comma-separated: monitors,dashboards,slos,downtimes,logs_pipelines,logs_metrics,logs_indexes') { |v| options[:kinds] = v.split(',').map(&:strip).map(&:to_sym) }
+  o.on('--per-kind N', Integer, 'objects to sample per kind (default 1)') { |v| options[:per_kind] = v }
+  o.on('-h', '--help') { puts o; exit 0 }
+end
+
+command = ARGV.shift
+parser.parse!(ARGV)
+
+# A receipt is a side channel: it records what happened, and a failure to write
+# one must never change the answer the tool already computed.
+def emit_receipt(receipt, dir)
+  path = receipt.write(dir)
+  warn "receipt: #{path}" if path
+rescue StandardError => e
+  warn "receipt could not be written: #{e.message}"
+end
+
+def require_config!(options)
+  return options[:config] if options[:config]
+
+  warn 'error: --config is required for this command'
+  exit 2
+end
+
+case command
+when 'validate'
+  path = require_config!(options)
+  begin
+    cfg = Absorb.config(path)
+    puts JSON.pretty_generate(
+      'config' => path,
+      'ok' => true,
+      'site' => cfg.site,
+      'account' => cfg.account,
+      'provenance' => cfg.provenance_rules.map { |r| "#{r['name']}=#{r['disposition']}" },
+      'archetypes' => cfg.archetypes.map { |a| a['name'] }
+    )
+  rescue Absorb::Config::Error => e
+    warn e.message
+    exit 1
+  end
+
+when 'capture'
+  counts = Absorb.capture(
+    root: options[:root],
+    config_path: options[:config],
+    account: options[:account],
+    site: options[:site],
+    kinds: options[:kinds],
+    progress: ->(kind, n) { warn("  #{kind}: #{n}") if (n % 25).zero? }
+  )
+  puts JSON.pretty_generate(counts)
+
+when 'classify'
+  puts JSON.pretty_generate(Absorb.classify(root: options[:root], config_path: options[:config]))
+
+when 'emit'
+  imports = Absorb.emit(root: options[:root], out_dir: options[:out], config_path: options[:config])
+  puts "emitted #{imports.size} resources to #{options[:out]}"
+
+when 'verify'
+  begin
+    result  = Absorb.verify(root: options[:root], out_dir: options[:out])
+    receipt = (result.ok? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
+              .call(command: 'verify', target: File.basename(options[:root]),
+                    findings: result.findings)
+  rescue StandardError => e
+    receipt = Absorb::Receipt.error(command: 'verify', target: File.basename(options[:root]),
+                                    message: e.message)
+    warn e.message
+    emit_receipt(receipt, options[:receipt_dir])
+    exit receipt.exit_code
+  end
+  puts result
+  emit_receipt(receipt, options[:receipt_dir])
+  exit receipt.exit_code
+
+when 'audit'
+  begin
+    result  = Absorb.audit(root: options[:root], active_metrics_path: options[:active_metrics])
+    receipt = (result.ok? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
+              .call(command: 'audit', target: File.basename(options[:root]),
+                    findings: result.findings)
+  rescue StandardError => e
+    receipt = Absorb::Receipt.error(command: 'audit', target: File.basename(options[:root]),
+                                    message: e.message)
+    warn e.message
+    emit_receipt(receipt, options[:receipt_dir])
+    exit receipt.exit_code
+  end
+  puts result
+  emit_receipt(receipt, options[:receipt_dir])
+  exit receipt.exit_code
+
+when 'metrics'
+  begin
+    names = Absorb.active_metrics(config_path: options[:config], account: options[:account],
+                                  site: options[:site])
+  rescue StandardError => e
+    warn e.message
+    exit 2
+  end
+  # WITH PROVENANCE. A bare list of names cannot say when it was taken or over
+  # what window, so an audit run against a months-old file calls live metrics
+  # dead with total confidence -- inverting its most valuable finding and
+  # looking exactly as authoritative while doing it.
+  document = { 'generatedAt' => Time.now.utc.iso8601, 'windowDays' => 30, 'metrics' => names }
+  if options[:out_given]
+    File.write(options[:out_given], JSON.generate(document))
+    warn "metrics: #{names.size} names -> #{options[:out_given]}"
+  else
+    puts JSON.generate(document)
+  end
+  exit 0
+
+when 'schema'
+  unless options[:provider_dir]
+    warn 'error: --provider-dir is required for schema'
+    exit 2
+  end
+  begin
+    json = Absorb.provider_schema(provider_dir: options[:provider_dir])
+  rescue StandardError => e
+    warn e.message
+    exit 2
+  end
+  if options[:out_given]
+    File.write(options[:out_given], json)
+    warn "schema: #{options[:out_given]}"
+  else
+    puts json
+  end
+  exit 0
+
+when 'conform'
+  unless options[:provider_schema]
+    warn 'error: --provider-schema is required for conform'
+    exit 2
+  end
+  begin
+    result  = Absorb.conform(root: options[:root], schema_path: options[:provider_schema],
+                             config_path: options[:config])
+    receipt = (result.ok? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
+              .call(command: 'conform', target: File.basename(options[:root]),
+                    findings: result.findings)
+  rescue StandardError => e
+    receipt = Absorb::Receipt.error(command: 'conform', target: File.basename(options[:root]),
+                                    message: e.message)
+    warn e.message
+    emit_receipt(receipt, options[:receipt_dir])
+    exit receipt.exit_code
+  end
+  puts result
+  emit_receipt(receipt, options[:receipt_dir])
+  exit receipt.exit_code
+
+when 'census'
+  begin
+    result  = Absorb.census(config_path: options[:config], account: options[:account],
+                            site: options[:site], provider_schema: options[:provider_schema],
+                            root: options[:root])
+    receipt = (result.ok? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
+              .call(command: 'census', target: 'estate', findings: result.findings)
+  rescue StandardError => e
+    receipt = Absorb::Receipt.error(command: 'census', target: 'estate', message: e.message)
+    warn e.message
+    emit_receipt(receipt, options[:receipt_dir])
+    exit receipt.exit_code
+  end
+  puts result
+  emit_receipt(receipt, options[:receipt_dir])
+  exit receipt.exit_code
+
+when 'gate'
+  begin
+    result  = Absorb.gate(root: options[:root], config_path: options[:config],
+                          out_dir: options[:out_given], schema_path: options[:provider_schema])
+    receipt = (result.ok? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
+              .call(command: 'gate', target: File.basename(options[:root]), findings: result.findings)
+  rescue StandardError => e
+    receipt = Absorb::Receipt.error(command: 'gate', target: File.basename(options[:root]),
+                                    message: e.message)
+    warn e.message
+    emit_receipt(receipt, options[:receipt_dir])
+    exit receipt.exit_code
+  end
+  puts result
+  emit_receipt(receipt, options[:receipt_dir])
+  exit receipt.exit_code
+
+when 'reconcile'
+  unless options[:provider_dir]
+    warn 'error: --provider-dir is required (a terraform filesystem mirror holding DataDog/datadog)'
+    exit 2
+  end
+  begin
+    results = Absorb.reconcile(root: options[:root], provider_dir: options[:provider_dir],
+                               config_path: options[:config], kinds: options[:kinds])
+    tally = results.group_by { |r| r[:status] }.transform_values(&:size)
+    tally.sort.each { |status, n| puts format('  %-14s %d', status, n) }
+    # An :unavailable dashboard is one whose body could not be read at all, so
+    # it stays on the raw projection and will keep drifting. That is a real no,
+    # not an error -- the run itself worked.
+    stuck = results.count { |r| r[:status] == :unavailable }
+    receipt = (stuck.zero? ? Absorb::Receipt.method(:pass) : Absorb::Receipt.method(:fail))
+              .call(command: 'reconcile', target: File.basename(options[:root]),
+                    findings: {
+                      'dashboards' => results.size,
+                      'recorded' => tally[:recorded].to_i,
+                      'refreshed' => tally[:refreshed].to_i,
+                      'alreadyClean' => tally[:already_clean].to_i,
+                      'archetype' => tally[:archetype].to_i,
+                      'unavailable' => stuck
+                    })
+  rescue StandardError => e
+    receipt = Absorb::Receipt.error(command: 'reconcile', target: File.basename(options[:root]),
+                                    message: e.message)
+    warn e.message
+  end
+  emit_receipt(receipt, options[:receipt_dir])
+  exit receipt.exit_code
+
+when 'roundtrip'
+  unless options[:provider_dir]
+    warn 'error: --provider-dir is required (a terraform filesystem mirror holding DataDog/datadog)'
+    exit 2
+  end
+  begin
+    outcomes = Absorb.roundtrip(root: options[:root], provider_dir: options[:provider_dir],
+                                config_path: options[:config], kinds: options[:kinds],
+                                per_kind: options[:per_kind])
+    outcomes.each do |o|
+      puts format('  %-11s %-34s %s', o.kind, o.id.to_s[0, 34], o.status)
+      puts "      #{o.detail}" if o.detail
+    end
+    clean = outcomes.count(&:clean?)
+    stranded = outcomes.count { |o| o.status == :provider_unavailable }
+    puts "roundtrip: #{clean}/#{outcomes.size} planned to No changes"
+    if stranded.positive?
+      warn "roundtrip: #{stranded} objects could not be planned at all -- the provider was " \
+           'unavailable. This is NOT a rate; the run could not answer.'
+    end
+    findings = {
+      'planned' => outcomes.size, 'noChanges' => clean,
+      'providerUnavailable' => stranded,
+      'outcomes' => outcomes.map do |o|
+        { 'kind' => o.kind.to_s, 'id' => o.id.to_s, 'status' => o.status.to_s }
+      end
+    }
+    # ERROR, not FAIL: a provider that vanished says nothing about the bodies,
+    # so the run could not answer rather than answering no.
+    receipt =
+      if stranded.positive?
+        Absorb::Receipt.error(command: 'roundtrip', target: File.basename(options[:root]),
+                              message: "#{stranded} objects could not be planned: provider unavailable",
+                              findings: findings)
+      elsif clean == outcomes.size
+        Absorb::Receipt.pass(command: 'roundtrip', target: File.basename(options[:root]),
+                             findings: findings)
+      else
+        Absorb::Receipt.fail(command: 'roundtrip', target: File.basename(options[:root]),
+                             findings: findings)
+      end
+  rescue StandardError => e
+    receipt = Absorb::Receipt.error(command: 'roundtrip', target: File.basename(options[:root]),
+                                    message: e.message)
+    warn e.message
+  end
+  emit_receipt(receipt, options[:receipt_dir])
+  exit receipt.exit_code
+
+else
+  puts parser
+  exit 2
+end

@@ -42,7 +42,7 @@ RSpec.describe Pangea::Resources::DatadogSyntheticsGlobalVariable do
         expect(ref.is_fido).to eq("${datadog_synthetics_global_variable.test.is_fido}")
         expect(ref.is_totp).to eq("${datadog_synthetics_global_variable.test.is_totp}")
         expect(ref.secure).to eq("${datadog_synthetics_global_variable.test.secure}")
-        expect(ref.tags).to eq("${datadog_synthetics_global_variable.test.tags}")
+        expect(ref[:tags]).to eq("${datadog_synthetics_global_variable.test.tags}")
       end
     end
 

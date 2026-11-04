@@ -8,7 +8,7 @@ require 'spec_helper'
 RSpec.describe Pangea::Resources::DatadogSecurityMonitoringDefaultRule do
   include Pangea::Testing::SynthesisTestHelpers
 
-  let(:required_attrs) { {} }
+  let(:required_attrs) { { custom_name: 'test-default-rule' } }
 
   describe ':datadog_security_monitoring_default_rule' do
     context 'with required attributes only' do
@@ -38,7 +38,7 @@ RSpec.describe Pangea::Resources::DatadogSecurityMonitoringDefaultRule do
         ref = synth.datadog_security_monitoring_default_rule('test', required_attrs)
 
         expect(ref.id).to eq("${datadog_security_monitoring_default_rule.test.id}")
-        expect(ref.type).to eq("${datadog_security_monitoring_default_rule.test.type}")
+        expect(ref[:type]).to eq("${datadog_security_monitoring_default_rule.test.type}")
       end
     end
 
@@ -122,7 +122,8 @@ RSpec.describe Pangea::Resources::DatadogSecurityMonitoringDefaultRule do
       it 'omits custom_name when not provided' do
         synth = create_synthesizer
         synth.extend(described_class)
-        synth.datadog_security_monitoring_default_rule('minimal', required_attrs)
+        # base payload must NOT carry custom_name, or its omission is unobservable
+        synth.datadog_security_monitoring_default_rule('minimal', { enabled: true })
         result = normalize_synthesis(synth.synthesis)
         config = validate_resource_structure(result, 'datadog_security_monitoring_default_rule', 'minimal')
         expect(config).not_to have_key('custom_name')
@@ -268,7 +269,7 @@ RSpec.describe Pangea::Resources::DatadogSecurityMonitoringDefaultRule do
   it_behaves_like 'a generated pangea resource',
     resource_type: :datadog_security_monitoring_default_rule,
     method: :datadog_security_monitoring_default_rule,
-    required_attrs: {},
+    required_attrs: { custom_name: 'test-default-rule' },
     expected_outputs: [:id, :type],
     sensitive_fields: [],
     immutable_fields: [],

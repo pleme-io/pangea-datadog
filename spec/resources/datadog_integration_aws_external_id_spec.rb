@@ -6,6 +6,7 @@
 require 'spec_helper'
 
 RSpec.describe Pangea::Resources::DatadogIntegrationAwsExternalId do
+
   include Pangea::Testing::SynthesisTestHelpers
 
   let(:required_attrs) { {} }

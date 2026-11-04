@@ -8,7 +8,7 @@ require 'spec_helper'
 RSpec.describe Pangea::Resources::DatadogLogsIntegrationPipeline do
   include Pangea::Testing::SynthesisTestHelpers
 
-  let(:required_attrs) { {} }
+  let(:required_attrs) { { is_enabled: true } }
 
   describe ':datadog_logs_integration_pipeline' do
     context 'with required attributes only' do
@@ -68,7 +68,7 @@ RSpec.describe Pangea::Resources::DatadogLogsIntegrationPipeline do
       it 'omits is_enabled when not provided' do
         synth = create_synthesizer
         synth.extend(described_class)
-        synth.datadog_logs_integration_pipeline('minimal', required_attrs)
+        synth.datadog_logs_integration_pipeline('minimal', {})
         result = normalize_synthesis(synth.synthesis)
         config = validate_resource_structure(result, 'datadog_logs_integration_pipeline', 'minimal')
         expect(config).not_to have_key('is_enabled')
@@ -129,7 +129,7 @@ RSpec.describe Pangea::Resources::DatadogLogsIntegrationPipeline do
   it_behaves_like 'a generated pangea resource',
     resource_type: :datadog_logs_integration_pipeline,
     method: :datadog_logs_integration_pipeline,
-    required_attrs: {},
+    required_attrs: { is_enabled: true },
     expected_outputs: [:id],
     sensitive_fields: [],
     immutable_fields: [],

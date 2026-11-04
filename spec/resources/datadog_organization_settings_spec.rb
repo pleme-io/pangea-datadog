@@ -8,7 +8,7 @@ require 'spec_helper'
 RSpec.describe Pangea::Resources::DatadogOrganizationSettings do
   include Pangea::Testing::SynthesisTestHelpers
 
-  let(:required_attrs) { {} }
+  let(:required_attrs) { { name: 'test-org' } }
 
   describe ':datadog_organization_settings' do
     context 'with required attributes only' do
@@ -87,7 +87,8 @@ RSpec.describe Pangea::Resources::DatadogOrganizationSettings do
       it 'omits name when not provided' do
         synth = create_synthesizer
         synth.extend(described_class)
-        synth.datadog_organization_settings('minimal', required_attrs)
+        # base payload must NOT carry `name`, or the omission cannot be observed
+        synth.datadog_organization_settings('minimal', { security_contacts: ['ops@example.com'] })
         result = normalize_synthesis(synth.synthesis)
         config = validate_resource_structure(result, 'datadog_organization_settings', 'minimal')
         expect(config).not_to have_key('name')
@@ -168,7 +169,7 @@ RSpec.describe Pangea::Resources::DatadogOrganizationSettings do
   it_behaves_like 'a generated pangea resource',
     resource_type: :datadog_organization_settings,
     method: :datadog_organization_settings,
-    required_attrs: {},
+    required_attrs: { name: 'test-org' },
     expected_outputs: [:id, :description, :public_id, :security_contacts],
     sensitive_fields: [],
     immutable_fields: [],

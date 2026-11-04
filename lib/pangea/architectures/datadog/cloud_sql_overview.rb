@@ -1,0 +1,115 @@
+# frozen_string_literal: true
+
+module Pangea
+  module Architectures
+    module Datadog
+      # Rung 3: a real archetype, derived from an estate rather than imagined.
+      #
+      # Several boards in a source estate were the same dashboard repeated: four
+      # CloudSQL timeseries, same metrics, same order, same layout. The repeated
+      # widget bodies collapse to one spec plus one declaration per board, and
+      # `pangea-datadog-absorb verify` proves the collapse changed nothing.
+      #
+      # THE SPEC BELOW IS MEASURED, NOT DESIGNED. A first version of this file
+      # assumed the obvious thing -- four identical widgets on a 2x2 grid, one
+      # query name -- and verify rejected it. The boards are actually two
+      # half-width widgets above two full-width ones; legend layout changes
+      # halfway down; the query names run query1, query2, query3, query3 (widgets
+      # 2 and 3 share a name, a copy-paste artifact in the original); and an empty
+      # `time` key is present on some widgets and absent on others with no pattern
+      # at all.
+      #
+      # All of that is reproduced rather than corrected. Absorbing an estate
+      # means representing what is there; tidying it is a separate change that
+      # should show up as a deliberate, reviewable diff and not ride in on a
+      # refactor that claims to be behaviour-preserving.
+      #
+      # A caution: boards that share a convention (the same template variables, the
+      # same group layout) over entirely different metrics are NOT an archetype. A
+      # shared skeleton is not a shared dashboard, and parameterising one into the
+      # other would invent content nobody wrote.
+      module CloudSqlOverview
+        GROUP_BY = 'database_id'
+
+        WIDGETS = [
+          { metric: 'gcp.cloudsql.database.cpu.utilization',
+            query: 'query1', legend: 'vertical',
+            layout: { 'x' => 0, 'y' => 0, 'width' => 6, 'height' => 5 } },
+          { metric: 'gcp.cloudsql.database.memory.utilization',
+            query: 'query2', legend: 'vertical',
+            layout: { 'x' => 6, 'y' => 0, 'width' => 6, 'height' => 5 } },
+          { metric: 'gcp.cloudsql.database.disk.bytes_used',
+            query: 'query3', legend: 'horizontal',
+            layout: { 'x' => 0, 'y' => 5, 'width' => 12, 'height' => 3 } },
+          { metric: 'gcp.cloudsql.database.disk.utilization',
+            query: 'query3', legend: 'horizontal',
+            layout: { 'x' => 0, 'y' => 8, 'width' => 12, 'height' => 3 } }
+        ].freeze
+
+        # scope is the literal tag filter, carried verbatim. The live boards
+        # differ in whitespace ("project_id:x , database_id:y" against
+        # "project_id:x,database_id:y") and reproducing them byte for byte
+        # matters more than tidying them, for the same reason as above.
+        #
+        # time_on lists the widget indices carrying the empty `time` key. It has
+        # no meaning in Datadog; it is an artifact of how each board was edited,
+        # and it is a parameter only because the estate made it one.
+        # scope_overrides maps a widget index to its own scope string. Exactly
+        # one board needs it: on one staging board the fourth widget drops the
+        # spaces its three siblings carry, writing "project_id:x,!database_id:y"
+        # where they write "project_id:x , ! database_id:y". Datadog reads both the same
+        # way. A human typed one of them differently, and an archetype that
+        # quietly merged them would be rewriting the estate under cover of a
+        # refactor -- so the difference is carried, and named.
+        def self.build(synth, name:, title:, scope:, time_on: (0...WIDGETS.size).to_a,
+                       scope_overrides: {}, layout_type: 'ordered', reflow_type: 'fixed')
+          synth.datadog_dashboard(name, {
+            layout_type: layout_type,
+            notify_list: [],
+            reflow_type: reflow_type,
+            restricted_roles: [],
+            template_variable: [],
+            title: title,
+            widget: WIDGETS.each_with_index.map do |spec, i|
+              widget(spec, scope_overrides.fetch(i, scope), time_on.include?(i))
+            end
+          })
+        end
+
+        def self.widget(spec, scope, with_time)
+          definition = {
+            'legend_columns' => %w[avg min max value sum],
+            'legend_layout' => spec[:legend],
+            'requests' => [request(spec, scope)],
+            'show_legend' => true,
+            'title' => '',
+            'title_align' => 'left',
+            'title_size' => '16',
+            'type' => 'timeseries'
+          }
+          definition['time'] = {} if with_time
+
+          { 'definition' => definition, 'layout' => spec[:layout] }
+        end
+
+        def self.request(spec, scope)
+          {
+            'display_type' => 'line',
+            'formulas' => [{ 'formula' => spec[:query] }],
+            'queries' => [{
+              'data_source' => 'metrics',
+              'name' => spec[:query],
+              'query' => "avg:#{spec[:metric]}{#{scope}} by {#{GROUP_BY}}"
+            }],
+            'response_format' => 'timeseries',
+            'style' => {
+              'line_type' => 'solid',
+              'line_width' => 'normal',
+              'palette' => 'dog_classic'
+            }
+          }
+        end
+      end
+    end
+  end
+end

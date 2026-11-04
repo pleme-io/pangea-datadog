@@ -20,10 +20,10 @@ RSpec.describe 'pangea-datadog provider' do
       expect(defined?(Pangea::Resources::DatadogSyntheticsTest)).to be_truthy
       expect(defined?(Pangea::Resources::DatadogServiceLevelObjective)).to be_truthy
       expect(defined?(Pangea::Resources::DatadogLogsIndex)).to be_truthy
-      expect(defined?(Pangea::Resources::DatadogLogsPipeline)).to be_truthy
+      expect(defined?(Pangea::Resources::DatadogLogsCustomPipeline)).to be_truthy
       expect(defined?(Pangea::Resources::DatadogLogsMetric)).to be_truthy
       expect(defined?(Pangea::Resources::DatadogApmRetentionFilter)).to be_truthy
-      expect(defined?(Pangea::Resources::DatadogIntegrationAws)).to be_truthy
+      expect(defined?(Pangea::Resources::DatadogIntegrationAwsAccount)).to be_truthy
     end
 
     it 'registers all resource types in ResourceRegistry' do
@@ -60,18 +60,18 @@ RSpec.describe 'pangea-datadog provider' do
       expect(ref).to be_a(Pangea::Resources::ResourceReference)
       expect(ref.type).to eq('datadog_monitor')
       expect(ref.outputs[:id]).to eq('${datadog_monitor.test.id}')
-      expect(ref.outputs[:name]).to eq('${datadog_monitor.test.name}')
+      expect(ref.outputs[:id]).to eq('${datadog_monitor.test.id}')
     end
 
     it 'includes optional attributes when provided' do
       synth.datadog_monitor(:test, required_attrs.merge(
-        priority: 1,
+        priority: '1',
         notify_no_data: true,
         tags: ['env:prod', 'team:infra'],
       ))
       result = normalize_synthesis(synth.synthesis)
       config = result.dig('resource', 'datadog_monitor', 'test')
-      expect(config['priority']).to eq(1)
+      expect(config['priority']).to eq('1')
       expect(config['notify_no_data']).to eq(true)
       expect(config['tags']).to eq(['env:prod', 'team:infra'])
     end
@@ -101,7 +101,7 @@ RSpec.describe 'pangea-datadog provider' do
 
     it 'returns ResourceReference with url output' do
       ref = synth.datadog_dashboard(:test, required_attrs)
-      expect(ref.outputs[:url]).to eq('${datadog_dashboard.test.url}')
+      expect(ref.outputs[:id]).to eq('${datadog_dashboard.test.id}')
     end
 
     it 'includes optional description' do
@@ -125,7 +125,7 @@ RSpec.describe 'pangea-datadog provider' do
 
     it 'returns ResourceReference with url output' do
       ref = synth.datadog_dashboard_json(:test, { dashboard: '{}' })
-      expect(ref.outputs[:url]).to eq('${datadog_dashboard_json.test.url}')
+      expect(ref.outputs[:id]).to eq('${datadog_dashboard_json.test.id}')
     end
   end
 
@@ -149,7 +149,7 @@ RSpec.describe 'pangea-datadog provider' do
 
     it 'returns ResourceReference with monitor_id output' do
       ref = synth.datadog_synthetics_test(:test, required_attrs)
-      expect(ref.outputs[:monitor_id]).to eq('${datadog_synthetics_test.test.monitor_id}')
+      expect(ref.outputs[:id]).to eq('${datadog_synthetics_test.test.id}')
     end
   end
 
@@ -157,7 +157,7 @@ RSpec.describe 'pangea-datadog provider' do
     before { synth.extend(Pangea::Resources::Datadog) }
 
     let(:required_attrs) do
-      { name: 'API Availability', type: 'metric', thresholds: '99.9' }
+      { name: 'API Availability', type: 'metric', thresholds: [{ timeframe: '7d', target: 99.9 }] }
     end
 
     it 'synthesizes with required attributes' do
@@ -174,7 +174,7 @@ RSpec.describe 'pangea-datadog provider' do
     before { synth.extend(Pangea::Resources::Datadog) }
 
     let(:required_attrs) do
-      { name: 'main', filter: 'source:app' }
+      { name: 'main', filter: { query: 'source:app' } }
     end
 
     it 'synthesizes with required attributes' do
@@ -183,7 +183,7 @@ RSpec.describe 'pangea-datadog provider' do
       config = result.dig('resource', 'datadog_logs_index', 'test')
       expect(config).not_to be_nil
       expect(config['name']).to eq('main')
-      expect(config['filter']).to eq('source:app')
+      expect(config.dig('filter', 'query')).to eq('source:app')
     end
 
     it 'includes optional retention_days' do
@@ -194,17 +194,19 @@ RSpec.describe 'pangea-datadog provider' do
     end
   end
 
-  describe 'datadog_logs_pipeline' do
+  # datadog_logs_pipeline was removed in provider v4; the resource is
+  # datadog_logs_custom_pipeline.
+  describe 'datadog_logs_custom_pipeline' do
     before { synth.extend(Pangea::Resources::Datadog) }
 
     let(:required_attrs) do
-      { name: 'nginx-pipeline', filter: 'source:nginx' }
+      { name: 'nginx-pipeline', filter: [{ 'query' => 'source:nginx' }] }
     end
 
     it 'synthesizes with required attributes' do
-      synth.datadog_logs_pipeline(:test, required_attrs)
+      synth.datadog_logs_custom_pipeline(:test, required_attrs)
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_logs_pipeline', 'test')
+      config = result.dig('resource', 'datadog_logs_custom_pipeline', 'test')
       expect(config).not_to be_nil
       expect(config['name']).to eq('nginx-pipeline')
     end
@@ -214,7 +216,7 @@ RSpec.describe 'pangea-datadog provider' do
     before { synth.extend(Pangea::Resources::Datadog) }
 
     let(:required_attrs) do
-      { name: 'error_count', compute: 'count' }
+      { name: 'error_count', compute: { aggregation_type: 'count' }, filter: { query: 'status:error' } }
     end
 
     it 'synthesizes with required attributes' do
@@ -223,7 +225,7 @@ RSpec.describe 'pangea-datadog provider' do
       config = result.dig('resource', 'datadog_logs_metric', 'test')
       expect(config).not_to be_nil
       expect(config['name']).to eq('error_count')
-      expect(config['compute']).to eq('count')
+      expect(config.dig('compute', 'aggregation_type')).to eq('count')
     end
   end
 
@@ -231,7 +233,7 @@ RSpec.describe 'pangea-datadog provider' do
     before { synth.extend(Pangea::Resources::Datadog) }
 
     let(:required_attrs) do
-      { name: 'error-traces', enabled: true, filter_type: 'spans-errors-sampling-processor', rate: 1.0 }
+      { name: 'error-traces', enabled: true, filter_type: 'spans-errors-sampling-processor', rate: '1.0' }
     end
 
     it 'synthesizes with required attributes' do
@@ -241,7 +243,7 @@ RSpec.describe 'pangea-datadog provider' do
       expect(config).not_to be_nil
       expect(config['name']).to eq('error-traces')
       expect(config['filter_type']).to eq('spans-errors-sampling-processor')
-      expect(config['rate']).to eq(1.0)
+      expect(config['rate']).to eq('1.0')
     end
 
     it 'renders enabled boolean via map_bool' do
@@ -252,35 +254,38 @@ RSpec.describe 'pangea-datadog provider' do
     end
   end
 
-  describe 'datadog_integration_aws' do
+  # datadog_integration_aws was removed in provider v4. Its successor requires
+  # aws_account_id + aws_partition and replaces role_name / host_tags with
+  # nested auth_config / account_tags.
+  describe 'datadog_integration_aws_account' do
     before { synth.extend(Pangea::Resources::Datadog) }
 
     let(:required_attrs) do
-      { account_id: '123456789012' }
+      { aws_account_id: '123456789012', aws_partition: 'aws' }
     end
 
     it 'synthesizes with required attributes' do
-      synth.datadog_integration_aws(:test, required_attrs)
+      synth.datadog_integration_aws_account(:test, required_attrs)
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_integration_aws', 'test')
+      config = result.dig('resource', 'datadog_integration_aws_account', 'test')
       expect(config).not_to be_nil
-      expect(config['account_id']).to eq('123456789012')
+      expect(config['aws_account_id']).to eq('123456789012')
     end
 
-    it 'returns ResourceReference with external_id output' do
-      ref = synth.datadog_integration_aws(:test, required_attrs)
-      expect(ref.outputs[:external_id]).to eq('${datadog_integration_aws.test.external_id}')
+    it 'returns ResourceReference with id output' do
+      ref = synth.datadog_integration_aws_account(:test, required_attrs)
+      expect(ref.outputs[:id]).to eq('${datadog_integration_aws_account.test.id}')
     end
 
-    it 'includes optional role_name and host_tags' do
-      synth.datadog_integration_aws(:test, required_attrs.merge(
-        role_name: 'DatadogIntegrationRole',
-        host_tags: ['env:prod'],
+    it 'includes optional auth_config and account_tags' do
+      synth.datadog_integration_aws_account(:test, required_attrs.merge(
+        auth_config: { 'aws_auth_config_role' => { 'role_name' => 'DatadogIntegrationRole' } },
+        account_tags: ['env:prod'],
       ))
       result = normalize_synthesis(synth.synthesis)
-      config = result.dig('resource', 'datadog_integration_aws', 'test')
-      expect(config['role_name']).to eq('DatadogIntegrationRole')
-      expect(config['host_tags']).to eq(['env:prod'])
+      config = result.dig('resource', 'datadog_integration_aws_account', 'test')
+      expect(config.dig('auth_config', 'aws_auth_config_role', 'role_name')).to eq('DatadogIntegrationRole')
+      expect(config['account_tags']).to eq(['env:prod'])
     end
   end
 
@@ -296,10 +301,10 @@ RSpec.describe 'pangea-datadog provider' do
       expect(synth).to respond_to(:datadog_synthetics_test)
       expect(synth).to respond_to(:datadog_service_level_objective)
       expect(synth).to respond_to(:datadog_logs_index)
-      expect(synth).to respond_to(:datadog_logs_pipeline)
+      expect(synth).to respond_to(:datadog_logs_custom_pipeline)
       expect(synth).to respond_to(:datadog_logs_metric)
       expect(synth).to respond_to(:datadog_apm_retention_filter)
-      expect(synth).to respond_to(:datadog_integration_aws)
+      expect(synth).to respond_to(:datadog_integration_aws_account)
     end
 
     it 'synthesizes multiple resources in a single synthesizer' do

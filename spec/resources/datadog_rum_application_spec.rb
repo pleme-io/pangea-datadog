@@ -42,7 +42,7 @@ RSpec.describe Pangea::Resources::DatadogRumApplication do
         expect(ref.client_token).to eq("${datadog_rum_application.test.client_token}")
         expect(ref.product_analytics_retention_state).to eq("${datadog_rum_application.test.product_analytics_retention_state}")
         expect(ref.rum_event_processing_state).to eq("${datadog_rum_application.test.rum_event_processing_state}")
-        expect(ref.type).to eq("${datadog_rum_application.test.type}")
+        expect(ref[:type]).to eq("${datadog_rum_application.test.type}")
       end
     end
 
